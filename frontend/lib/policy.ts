@@ -23,6 +23,7 @@ export interface ParsedPolicy {
   drawdownThresholdBps: number;
   oracleDeviationThresholdBps: number;
   exitPercentBps: number;
+  targetAsset: 'USDC' | 'SOL' | 'USDT';
   mode: PolicyMode;
   warnings: string[];
   source?: PolicySource;
@@ -54,6 +55,7 @@ export async function parsePolicyLlm(input: string): Promise<ParsedPolicy> {
         drawdownThresholdBps: data.policy.drawdownThresholdBps,
         oracleDeviationThresholdBps: data.policy.oracleDeviationThresholdBps,
         exitPercentBps: data.policy.exitPercentBps,
+        targetAsset: data.policy.targetAsset || fallback.targetAsset,
         mode: data.policy.mode as PolicyMode,
         warnings: llmWarnings,
         source: 'llm',
@@ -153,10 +155,18 @@ export function parsePolicy(input: string): ParsedPolicy {
     exitBps = 5000;
   }
 
+  let targetAsset: 'USDC' | 'SOL' | 'USDT' = 'USDC';
+  if (/\b(?:to|into|in)\s+(?:sol|wsol)\b/i.test(text) || (/\bsol\b/i.test(text) && !/\busdc\b/i.test(text) && !/\busdt\b/i.test(text))) {
+    targetAsset = 'SOL';
+  } else if (/\b(?:to|into|in)\s+usdt\b/i.test(text) || /\busdt\b/i.test(text)) {
+    targetAsset = 'USDT';
+  }
+
   return {
     drawdownThresholdBps: drawdownBps,
     oracleDeviationThresholdBps: deviationBps,
     exitPercentBps: exitBps,
+    targetAsset,
     mode,
     warnings,
     source: 'deterministic',

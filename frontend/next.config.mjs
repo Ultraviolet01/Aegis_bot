@@ -1,13 +1,13 @@
 import { config as loadEnv } from 'dotenv';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 
-// Load the repo-root .env so the frontend, the agent, and the Foundry scripts
-// all read one file. Next only auto-loads env files inside its own directory,
-// so without this the OKX credentials would appear unset and every swap quote
-// would fail with an opaque auth error.
+// Load the repo-root .env so the frontend, agent, and Anchor scripts all read one file.
 const here = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: resolve(here, '../.env') });
+
+const require = createRequire(import.meta.url);
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -17,17 +17,22 @@ const nextConfig = {
 
   devIndicators: false,
 
-  // NOTE: nothing here exposes OKX credentials to the browser. They are read
-  // only inside route handlers (server-side). Adding them to `env` or to any
-  // NEXT_PUBLIC_ variable would inline them into the client bundle and leak
-  // the API secret to every visitor.
+  // Fix: motion@13 / framer-motion@13 require motion-utils to be explicitly
+  // resolvable. Next.js webpack doesn't hoist it from the monorepo correctly.
+  webpack(config) {
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      'motion-utils': require.resolve('motion-utils'),
+    };
+    return config;
+  },
+
   env: {
-    NEXT_PUBLIC_AEGIS_NETWORK: process.env.NEXT_PUBLIC_AEGIS_NETWORK ?? process.env.AEGIS_NETWORK ?? 'mainnet',
-    NEXT_PUBLIC_AEGIS_VAULT_ADDRESS: process.env.NEXT_PUBLIC_AEGIS_VAULT_ADDRESS ?? process.env.AEGIS_VAULT_ADDRESS ?? '',
-    NEXT_PUBLIC_POLICY_REGISTRY_ADDRESS: process.env.NEXT_PUBLIC_POLICY_REGISTRY_ADDRESS ?? process.env.POLICY_REGISTRY_ADDRESS ?? '',
-    NEXT_PUBLIC_RISK_ORACLE_ADDRESS: process.env.NEXT_PUBLIC_RISK_ORACLE_ADDRESS ?? process.env.RISK_ORACLE_ADDRESS ?? '',
-    NEXT_PUBLIC_EMERGENCY_VAULT_ADDRESS: process.env.NEXT_PUBLIC_EMERGENCY_VAULT_ADDRESS ?? process.env.EMERGENCY_VAULT_ADDRESS ?? '',
+    NEXT_PUBLIC_SOLANA_RPC_URL: process.env.NEXT_PUBLIC_SOLANA_RPC_URL || process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com',
+    NEXT_PUBLIC_AEGIS_PROGRAM_ID: process.env.NEXT_PUBLIC_AEGIS_PROGRAM_ID || process.env.AEGIS_PROGRAM_ID || 'C67pkvsssWAB8j6vPmAfb2WB8uWWiPmkYfqEjK8HaG6L',
+    NEXT_PUBLIC_USDC_MINT: process.env.NEXT_PUBLIC_USDC_MINT || process.env.USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
   },
 };
 
 export default nextConfig;
+

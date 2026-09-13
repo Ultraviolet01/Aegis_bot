@@ -70,9 +70,9 @@ export default function Landing() {
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.8, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
           >
-            <div className="kicker">X Layer · non-custodial risk infrastructure</div>
+            <div className="kicker">Solana · non-custodial risk infrastructure for xStocks</div>
             <h1>Protection that <em>can watch.</em><br/>Not custody.</h1>
-            <p>Aegis is an AI risk guardian for tokenized real-world assets and DeFi positions. You write the rule. Your vault enforces the boundary. The agent watches the market and has only one narrow action when your condition is breached.</p>
+            <p>Aegis is an AI risk guardian for tokenized stocks (xStocks) on Solana. You write the rule. The Anchor program enforces the boundary on-chain. The agent watches the market and has only one narrow action when your condition is breached.</p>
             <div className="hero-status-strip">
               <span className="pulse-dot"></span>
               <span>Agent status: <strong>Watching</strong> · Last check {lastCheckSec}s ago · Risk score 14/100</span>
@@ -177,7 +177,7 @@ export default function Landing() {
                 <div className="eyebrow">03 / What it guards</div>
                 <h2>Real assets. Explicit boundaries.</h2>
               </div>
-              <p className="intro">Designed around the growing onchain RWA market: tokenized equities, commodities and stablecoins.</p>
+              <p className="intro">Designed around the growing onchain tokenized stock market: xStocks equities, corporate actions, and multi-asset recovery.</p>
             </div>
           </Reveal>
           
@@ -185,20 +185,20 @@ export default function Landing() {
             <Reveal delay={0.1} className="assetcard">
               <div className="assettop"><span className="ticker">SPYX</span><span className="verified">REGISTRY</span></div>
               <div className="assetname">S&P 500 exposure</div>
-              <div className="assetmeta">TOKENIZED EQUITY · EVM</div>
+              <div className="assetmeta">TOKENIZED STOCK · SOLANA SPL</div>
               <div className="assetline">Price source · oracle feed · policy-aware</div>
             </Reveal>
             <Reveal delay={0.2} className="assetcard">
-              <div className="assettop"><span className="ticker">GLDX</span><span className="verified">REGISTRY</span></div>
-              <div className="assetname">Gold exposure</div>
-              <div className="assetmeta">TOKENIZED COMMODITY · EVM</div>
+              <div className="assettop"><span className="ticker">NVDAX</span><span className="verified">REGISTRY</span></div>
+              <div className="assetname">NVIDIA exposure</div>
+              <div className="assetmeta">TOKENIZED STOCK · SOLANA SPL</div>
               <div className="assetline">Price source · oracle feed · policy-aware</div>
             </Reveal>
             <Reveal delay={0.3} className="assetcard">
-              <div className="assettop"><span className="ticker">USDC</span><span className="verified">STABLECOIN</span></div>
-              <div className="assetname">Dollar liquidity</div>
-              <div className="assetmeta">ERC-20 · LIQUIDITY BUFFER</div>
-              <div className="assetline">Recovery destination · time-locked vault</div>
+              <div className="assettop"><span className="ticker">USDC / SOL / USDT</span><span className="verified">EXIT ASSETS</span></div>
+              <div className="assetname">Liquid protection</div>
+              <div className="assetmeta">SPL TOKEN · USER ATAs</div>
+              <div className="assetline">Recovery destination · deterministic owner ATA</div>
             </Reveal>
           </div>
         </section>
@@ -217,14 +217,14 @@ export default function Landing() {
                   <li><span className="tick">+</span>Read price and oracle-health data</li>
                   <li><span className="tick">+</span>Compare signals against your signed thresholds</li>
                   <li><span className="tick">+</span>Pause a position when permitted</li>
-                  <li><span className="tick">+</span>Route the approved percentage to the time-locked recovery vault</li>
+                  <li><span className="tick">+</span>Execute swap_and_deliver directly to your own wallet (USDC, SOL, USDT)</li>
                 </ul>
               </Reveal>
               <Reveal delay={0.2} className="cannot">
                 <h3>It NEVER can</h3>
                 <ul>
                   <li><span className="cross">×</span>Withdraw funds to itself or an arbitrary address</li>
-                  <li><span className="cross">×</span>Send funds anywhere except the recovery vault</li>
+                  <li><span className="cross">×</span>Send funds anywhere except your own destination ATA</li>
                   <li><span className="cross">×</span>Change, loosen or rewrite your policy</li>
                   <li><span className="cross">×</span>Block, delay or override your withdrawal</li>
                 </ul>
@@ -239,7 +239,7 @@ export default function Landing() {
               <div>
                 <div className="eyebrow" style={{ color: '#86a69a' }}>06 / Final word</div>
                 <h2>Give the agent eyes.<br/>Keep the keys.</h2>
-                <p>Non-custodial AI risk protection for RWA and DeFi positions on X Layer with the authority boundary designed into the vault itself.</p>
+                <p>Non-custodial AI risk protection for tokenized stocks on Solana with the authority boundary enforced by on-chain Anchor constraints.</p>
               </div>
               <Link className="primary" style={{ background: 'var(--mint)', color: 'var(--ink)' }} href="/app">Open Aegis ↗</Link>
             </div>
@@ -254,7 +254,7 @@ export default function Landing() {
         viewport={{ once: true }}
         transition={{ duration: 1, delay: 0.2 }}
       >
-        <span>AEGIS · X LAYER</span>
+        <span>AEGIS · SOLANA</span>
         <span>WATCH · VERIFY · DEFEND · RECORD</span>
       </motion.footer>
     </>

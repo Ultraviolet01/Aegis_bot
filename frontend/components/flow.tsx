@@ -312,7 +312,7 @@ function FlowDiagram({ activeStep }: { activeStep: number }) {
         <g transform="translate(270, 114)">
           <rect x="0" y="0" width="180" height="22" rx="4" fill="rgba(255, 107, 107, 0.12)" stroke="rgba(255, 107, 107, 0.3)" />
           <text x="90" y="15" textAnchor="middle" fill="#ff6b6b" fontSize="9.5" fontWeight="600">
-            🚫 Direct Agent Transfer Blocked
+            Direct Agent Transfer Blocked
           </text>
         </g>
       </svg>

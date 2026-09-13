@@ -33,7 +33,18 @@ skills-lock.json
 aegis_landing_mockup.html
 /vid.mp4
 
+# Solana & Anchor
+.anchor/
+target/*
+!target/idl/
+!target/types/
+**/*-keypair.json
+id.json
+test-ledger/
+
+
 # OS junk
 .DS_Store
 Thumbs.db
 desktop.ini
+

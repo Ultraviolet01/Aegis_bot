@@ -77,7 +77,40 @@ h1 em{font-style:normal;color:#245e4b}
 .assetcard{background:var(--paper);padding:27px;min-height:210px}.assettop{display:flex;justify-content:space-between}.ticker{font:500 16px var(--mono)}.verified{font:500 10px var(--mono);color:#2d6b56}.assetname{font:500 25px var(--display);margin-top:34px}.assetmeta{font:400 11px var(--mono);color:#718078;margin-top:9px}.assetline{margin-top:27px;border-top:1px solid var(--line);padding-top:12px;font-size:12px;color:#5e6b65}
 .boundary{display:grid;grid-template-columns:1fr 1fr;margin-top:55px}.can,.cannot{padding:36px}.can{background:var(--forest);color:var(--white);border-radius:24px 0 0 24px}.cannot{background:#e7d9d2;border-radius:0 24px 24px 0}.boundary h3{font:600 34px var(--display);margin:0 0 20px}.boundary ul{list-style:none;padding:0;margin:0}.boundary li{padding:13px 0;border-top:1px solid rgba(255,255,255,.14);font-size:14px}.cannot li{border-color:rgba(16,35,30,.12)}.tick{color:var(--mint);font-family:var(--mono);margin-right:9px}.cross{color:var(--coral);font-family:var(--mono);margin-right:9px}
 /* ── Dashboard shell ─────────────────────────────────────── */
-.app{background:#0a1912;color:var(--white);padding:60px 0 90px}
+.app{
+  background:
+    radial-gradient(1100px circle at 18% 8%, rgba(16, 185, 129, 0.16) 0%, transparent 60%),
+    radial-gradient(900px circle at 85% 15%, rgba(6, 78, 59, 0.28) 0%, transparent 55%),
+    radial-gradient(1200px circle at 50% 85%, rgba(13, 148, 136, 0.12) 0%, transparent 65%),
+    radial-gradient(800px circle at 90% 90%, rgba(217, 119, 6, 0.08) 0%, transparent 50%),
+    #050c09;
+  color: var(--white);
+  padding: 0;
+  position: relative;
+  min-height: 100vh;
+}
+.app::before{
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 85% 70% at 50% 40%, #000 35%, transparent 95%);
+  -webkit-mask-image: radial-gradient(ellipse 85% 70% at 50% 40%, #000 35%, transparent 95%);
+  pointer-events: none;
+  z-index: 0;
+}
+.app::after{
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, transparent 40%, rgba(3, 8, 6, 0.6) 100%);
+  pointer-events: none;
+  z-index: 0;
+}
+.app > *{position:relative;z-index:1;}
 .appgrid{
   display:grid;
   grid-template-columns:220px 1fr;

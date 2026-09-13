@@ -1,152 +1,108 @@
-# Project Brief: Aegis — GROUND TRUTH
+# PROJECT BRIEF: Aegis on Solana — Stocklana Hackathon
 
-> This file is the authoritative reference for this project. Sections 3 and 4 are fixed
-> facts, not suggestions. If an address, feed URL, or parameter is needed and is not
-> listed here, STOP AND ASK rather than guessing or reusing a value from general
-> Solidity/EVM training knowledge. X Layer-specific values (chain IDs, oracle provider,
-> token addresses) have already caused incorrect assumptions earlier in this project's
-> research and were corrected against live sources.
+This is the ground-truth document for this project. If a future conversation or agent output contradicts this brief, this brief wins unless explicitly revised. Read this in full before writing any code.
 
 ---
 
-## 1. What we're building
+## 0. Critical Context: Transition to Solana
 
-**Aegis** — a non-custodial AI risk-guardian for RWA & DeFi positions on X Layer.
+Aegis previously existed as an X Layer (EVM) project built for OKX's "Build X AI Season" hackathon. That submission is complete and already judged.
 
-**Tagline:** "Non-custodial AI guardian that protects RWA & DeFi positions on X Layer before losses compound."
+This is a **new, separate submission for the Stocklana Hackathon** on Solana. Nothing here preserves compatibility with the X Layer codebase. Solidity, ERC-20, viem/ethers, OKX DEX, and Foundry are **not used anywhere**. This is a from-scratch Solana build using Anchor/Rust, SPL/Token-2022, Jupiter, and Anchor's own test tooling.
 
-**Core mechanic:** A user deposits a supported asset (a stablecoin or an xStocks tokenized-equity
-token) into an `AegisVault` position. They set a risk policy in plain English (e.g. "if drawdown
-> 8% in 24h or oracle deviation > 2%, exit 50% to USDC"). An off-chain agent parses that into
-structured on-chain parameters, continuously evaluates risk using a hybrid deterministic +
-lightweight statistical engine, and — only within the policy the user approved — can pause the
-position or route a portion of it to a time-locked `EmergencyVault`. The agent can never withdraw
-funds to itself or to any address other than the EmergencyVault; the user can always withdraw
-their own remaining balance at any time. Every decision is emitted as an on-chain event for full
-transparency.
+---
 
-## 2. Non-negotiable requirements (hackathon rules)
+## 1. What We're Building
 
-- Must incorporate AI into the product and deploy on **X Layer**.
-- Must deploy to **X Layer Testnet during the hackathon**, then launch on **Mainnet** — both are required.
-- Must have a **dedicated, active project X account** throughout the project's lifetime.
-- Submission post **must tag @XLayerOfficial**.
-- Submit via the official Google Form **before Aug 21, 2026, 23:59 UTC**.
-- Judging criteria: AI application, innovation, product completeness, user value, X Layer integration, growth potential.
-- Separate **$50K Liquidity Grant** for the AI-RWA track — Aegis is scoped to compete for this
-  directly by guarding real tokenized-equity (xStocks) positions.
+**Aegis** — Non-custodial AI risk guardian for tokenized stocks (xStocks) on Solana.
 
-**Submission form:** https://docs.google.com/forms/d/e/1FAIpQLSfgU_3zcXdxK0GJQxj33QeUWdEcAaYnieVe9p5cFDb2JFQa4Q/viewform
+**Tagline:** *"Write your risk limit in plain English. Aegis turns it into on-chain policy and guards your xStock position — non-custodially, 24/7."*
 
-## 3. Verified network facts — do not hardcode anything not listed here
+**Core Thesis:** Tokenized stocks on Solana (xStocks) trade 24/7, but retail brokerages close at 4:00 PM EST. Aegis protects equity positions during off-hours, earnings gaps, and weekend macro shocks while maintaining unconditional user sovereignty.
 
-| Item | Value |
-|---|---|
-| Mainnet Chain ID | `196` (0xC4) |
-| Mainnet RPC | `https://rpc.xlayer.tech`, `https://xlayerrpc.okx.com` |
-| Testnet Chain ID | `1952` (the old `195` is stale — ignore any guide referencing it) |
-| Testnet RPC | `https://testrpc.xlayer.tech/terigon`, `https://xlayertestrpc.okx.com/terigon` |
-| Gas token (both networks) | OKB |
-| VM | Full EVM equivalence (OP Stack + AggLayer) |
-| Deploy tooling | Foundry (officially documented; contracts were built and tested with it) |
-| Oracle | **Chainlink** Data Feeds (`AggregatorV3Interface`, standard pull) + Chainlink Data Streams (low-latency, live on mainnet, explicitly positioned by OKX for RWA/equities pricing). **Not Pyth** — do not integrate Pyth. |
-| Attestation | EAS is a live predeploy at `0x4200000000000000000000000000000000000021`, SchemaRegistry at `...0020` |
-| Testnet faucet | https://web3.okx.com/xlayer/faucet — 0.2 OKB/day per wallet, connect on chain ID 1952 before claiming |
+---
 
-## 4. Verified real asset addresses (X Layer mainnet)
+## 2. Invariants & Authority Boundary
 
-Do not deploy mock tokens to mainnet — use these real addresses.
-Source: OKLink X Layer token list, confirmed Aug 8, 2026.
+1. **Withdraw is unconditional**: The user can call `withdraw` at any second. Neither the agent nor a paused state can gate user withdrawals.
+2. **Deterministic exit destination**: In `swap_and_deliver`, the destination account is deterministically derived on-chain as the user's Associated Token Account (ATA) for their approved target mint (`USDC`, `SOL/WSOL`, or `USDT`). It is **never** passed as an arbitrary recipient parameter.
+3. **Hard policy ceilings**: `exit_bps` and `max_slippage_bps` are clamped on-chain to the user-signed policy parameters. The agent cannot exceed them.
 
-| Token | Symbol | Mainnet Address |
-|---|---|---|
-| SP500 xStock | SPYX | `0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48` |
-| Wrapped SP500 xStock | WSPYX | `0xe7e553cd128f0011777323a0b44a7b96ea1cb540` |
-| Nasdaq xStock | QQQX | `0xa753a7395cae905cd615da0b82a53e0560f250af` |
-| Wrapped Nasdaq xStock | WQQQX | `0x4c1ae29c159838fc1b224636e28e086eb69101f7` |
-| ASML xStock | ASMLX | `0xc0b417e7f83db438631eb5e096684dd742e5294f` |
-| Wrapped ASML xStock | WASMLX | `0x9147b03c16b18fc4f686f610f189f91ddf4347b4` |
-| Sandisk xStock | SNDKX | `0xb63efbc28860c8097e341de1fcf59456161e9d98` |
-| Wrapped Sandisk xStock | WSNDKX | `0x75e82e2884ea10f72fca777449b73377f4646219` |
-| Micron xStock | MUX | `0xf6a873bae4ba1b304e45df52a4b7d176e1c6a8c4` |
-| Wrapped Micron xStock | WMUX | `0xe2047ee3bddb5c99ae428ab83df63f8730698e30` |
-| Gold xStock | GLDX | `0x2380f2673c640fb67e2d6b55b44c62f0e0e69da9` |
-| Wrapped Gold xStock | WGLDX | `0x735f1509bff25e27cd442b9bfb231324648ead9b` |
-| USDC | USDC | `0x74b7F16337b8972027F6196A17a631aC6dE26d22` |
-| USDT | USDT | `0x1E4a...D41d` — **INCOMPLETE, look up on OKLink before use** |
-| USDC.e | USDC.e | `0xA8CE...C035` — **INCOMPLETE, look up on OKLink before use** |
+---
 
-**MVP asset picks:** GLDX (gold — low-drama demo asset) and SPYX (flagship index-exposure story).
+## 3. Verified On-Chain Assets (Solana Mainnet)
 
-**Testnet gap:** No official USDC or xStocks testnet deployment is confirmed. Deploy a `MockERC20`
-for testnet only, and switch to the real mainnet addresses above at mainnet launch — never deploy
-MockERC20 to mainnet.
+| Asset | Ticker | Mint Address | Standard | Decimals |
+|---|---|---|---|---|
+| SP500 xStock | SPYX / SPYx | `XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W` | Token-2022 | 8 |
+| Wrapped SOL | WSOL | `So11111111111111111111111111111111111111112` | SPL Token | 9 |
+| USD Coin | USDC | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | SPL Token | 6 |
+| Tether USD | USDT | `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` | SPL Token | 6 |
 
-More xStocks tickers (NVDAX, AAPLX, TSLAX, etc.) exist further down the 27-page OKLink token
-list: https://www.oklink.com/x-layer/token-list
+---
 
-## 5. Contracts already written and compiling — build on these
+## 4. Corporate Actions: On-Chain Multiplier Normalisation
 
-Packaged as `aegis-contracts.zip` (`src/`, `test/`, `foundry.toml`, `remappings.txt`). Compiles
-clean with `forge build` (Solidity 0.8.24) after restoring the two stripped dependencies:
+Stock splits and dividend adjustments are **not crashes**.
+xStocks uses the native **Token-2022 `ScaledUiAmountConfig` extension** (Extension ID 25) stored directly on the Mint account.
 
-```
-forge install OpenZeppelin/openzeppelin-contracts
-forge install foundry-rs/forge-std
-```
+- **Current Multiplier**: Read on-chain via `config.multiplier`.
+- **Pending Actions**: Published on-chain before activation via `config.newMultiplier` and `config.newMultiplierEffectiveTimestamp`.
+- **Classification Logic (`DIVIDEND_THRESHOLD = 0.05`)**:
+  - Relative change $< 5\%$: Classified as **`dividend`** (e.g. quarterly reinvestment adjustments like $1.0039 \rightarrow 1.0057$, which is ~0.18%).
+  - Relative change $\ge 5\%$: Classified as **`split`** (if multiplier increases) or **`reverse_split`** (if multiplier decreases).
+- **Ambiguous Borderline Review Band (`REVIEW_BAND = 0.02`)**:
+  - A $2$ percentage point band is established around the $5\%$ threshold, defining an ambiguous zone between **$3\%$ and $7\%$** ($0.03 \le \text{pctChange} \le 0.07$).
+  - **Rationale**: Ordinary quarterly equity dividends rarely exceed 1–2%, while standard forward/reverse stock splits are typically $\ge 10\%$ (e.g. 5:4, 4:3, 2:1). However, large special one-off dividends (3–5%) and subtle micro-splits (5–7%) can overlap in magnitude. Purely arithmetic classification without issuer metadata cannot be 100% confident in this zone.
+  - **Behavior**: When a multiplier change falls in the $3\% - 7\%$ review band, the engine assigns its best-guess default label but flags the action with **`needsReview: true`**.
+  - **Non-blocking Invariant**: The `needsReview` flag is strictly a human-facing transparency signal. It surfaces in the History tab UI with an amber caution badge (`⚠️`, e.g. *"Dividend (unconfirmed — please verify)"*) rather than stating the classification with false certainty. **It never blocks or modifies risk-engine calculations** — price normalisation ($\text{rawPrice} \times \text{multiplier}$) and drawdown math execute identically regardless of `needsReview`.
+- **Window Suspension**: During the publish-to-activation window, risk triggers are proactively suspended to prevent spurious false breaches.
 
-A fuzz test in `test/AegisVault.t.sol` proves the core non-custodial invariant (agent can never
-route funds to an arbitrary address).
+---
 
-- `src/AegisVault.sol` — position holder. Owner deposits/withdraws freely; agent can only
-  `pausePosition`, `logRiskEvaluation`, or `routeToEmergency` (no recipient parameter — it can
-  only ever send to the immutable `emergencyVault` address).
-- `src/EmergencyVault.sol` — receives routed funds, time-locks them (default 1 day in tests),
-  pays out only to the original position owner after the lock.
-- `src/PolicyRegistry.sol` — stores each position's plain-English-derived policy (drawdown bps,
-  oracle deviation bps, exit % bps, mode). Only the position owner can write; the agent has no
-  write access at all.
-- `src/RiskOracle.sol` — wraps a Chainlink `AggregatorV3Interface` feed per asset, with staleness
-  protection.
-- `src/mocks/MockERC20.sol` — testnet-only mintable token.
+## 5. Price-Source Architecture & Guarantees
 
-Extend/wire these into the off-chain agent and frontend rather than redesigning the contract
-architecture. Flag any suspected bug before changing core logic — the non-custodial invariant is
-the most safety-critical part of this project.
+### Empirical Status of External APIs
+Live probes against `https://api.xstocks.fi/api/v2` (`/assets`, `/oracles`, `/corporate-actions`) return `HTTP 404 (Cannot GET ...)`. The xStocks REST oracle is currently pre-launch/unmounted.
 
-## 6. Build plan phases
+> [!IMPORTANT]
+> **Submission Action Item:** Re-probe `https://api.xstocks.fi/api/v2/oracles` prior to final hackathon submission. If the official REST oracle comes online, plug it into `agent-solana` via `XSTOCKS_API_BASE`.
 
-1. **Off-chain agent** (Node.js/TypeScript): monitoring loop (poll positions + Chainlink prices) →
-   hybrid risk scoring (deterministic drawdown/deviation/volume checks + a simple z-score
-   volatility layer — be explicit in code comments that this is statistical, not a trained model,
-   so the pitch stays honest) → LLM-based plain-English policy parser that outputs strict JSON
-   validated server-side before ever becoming calldata → execution via `routeToEmergency`, using a
-   dedicated agent-role key, never the deployer key.
-2. **OKX DEX integration** for the exit execution path (quote → approve-transaction → swap), both
-   for UX and because it generates the trading volume the Launch Grant is scored on. Needs an OKX
-   Developer Portal API key/secret/passphrase/Project ID — register early, provisioning takes time.
-   Confirm X Layer's `chainIndex` via the `/supported/chain` endpoint before wiring swap calls.
-3. **Frontend** (Next.js): wallet connect, deposit flow, plain-English policy composer with a
-   parsed-parameter preview before signing, live risk dashboard, manual pause/emergency-exit button.
-4. **Testnet deploy** on chain ID 1952, verify contracts on the explorer.
-5. **Mainnet deploy** on chain ID 196, swap MockERC20 references for the real addresses in
-   section 4, wire the real Chainlink feed addresses (confirm exact feed addresses via Chainlink's
-   official X Layer feed directory before hardcoding).
-6. **Submission**: X account launch post tagging @XLayerOfficial, then the Google Form.
+### Implemented Price Pipeline: Multi-Pool Cross-Check with Divergence Guard
+Because single DEX pools were shown in the `mkzung/solana-xstocks-wash-analysis` study to experience wash trading across bot fleets, Aegis implements a **multi-pool cross-checked aggregation**:
 
-## 7. Explicit non-goals for the hackathon MVP
+1. **Routing Query**: Uses Jupiter Metis router (`api.jup.ag/swap/v1/quote`) to pull deliverable quotes across both the verified Orca Whirlpool (`gef4pD5g...`, $155k TVL) and Raydium CLMM (`4pCZCVE...`).
+2. **Divergence Guard (Circuit Breaker)**:
+   $$\text{Spread} = \frac{|P_{\text{orca}} - P_{\text{ray}}|}{\min(P_{\text{orca}}, P_{\text{ray}})}$$
+   If the spread between the two primary pools exceeds **1.5% (150 BPS)**, the state is flagged as `POOL_DIVERGENCE`. The agent **refuses to trigger a breach**.
+3. **2-Poll Temporal Persistence**: Breaches must persist across two consecutive polling intervals (30–60s) to eliminate transient single-block wash spikes.
 
-Do not build these now — future scope, mention only in the pitch/writeup: `AgentIdentity` soulbound
-NFT, agent-to-agent query API, multi-position portfolio view (single position is fine for the demo),
-a separate `DecisionLogger` contract (events on `AegisVault` cover this for MVP), automatic
-rebalancing, cross-chain monitoring, x402 monetization.
+### Residual Risk Disclosure
+This architecture does **not** provide complete off-chain oracle independence from DEX pools. While single-pool wash trading cannot trigger a false exit due to the divergence guard, there remains a **residual risk of coordinated multi-pool manipulation**: if an attacker simultaneously skews liquidity across both Orca and Raydium within the divergence threshold under low liquidity conditions, the cross-check could be temporarily deceived. Full mitigation requires the official xStocks issuer oracle feed once live.
 
-## 8. Key links
+---
 
-- Hackathon page: https://web3.okx.com/xlayer/build-x-series
-- X Layer developer docs: https://web3.okx.com/xlayer/docs/developer/build-on-xlayer/network-information
-- X Layer contracts/predeploys reference: https://web3.okx.com/xlayer/docs/developer/build-on-xlayer/contracts
-- Deploy guide (Foundry/Hardhat/Truffle): https://web3.okx.com/xlayer/docs/developer/deploy-a-smart-contract/deploying-contract
-- Testnet faucet: https://web3.okx.com/xlayer/faucet
-- Token list / address lookup: https://www.oklink.com/x-layer/token-list
-- Submission form: https://docs.google.com/forms/d/e/1FAIpQLSfgU_3zcXdxK0GJQxj33QeUWdEcAaYnieVe9p5cFDb2JFQa4Q/viewform
+## 6. Technology Stack
+ 
+* **Smart Contract**: Anchor 0.30.1 / Rust (`programs/aegis`).
+* **Tokens**: SPL Token + Token-2022 (with `ScaledUiAmountConfig`).
+* **DEX Execution**: Jupiter v6 / Metis Router (Versioned Transactions `v0` with Address Lookup Tables).
+* **Guardian Agent**: Node.js / TypeScript (`agent-solana`).
+* **Frontend**: Next.js 15, Solana Wallet Adapter, Recharts backtest simulation.
+
+---
+
+## 7. Testing Scope & Empirical Verification Status
+
+> [!IMPORTANT]
+> **Empirical Verification Status**:
+> The automated test suite (`tests/aegis.ts`, executed against `solana-test-validator` with mainnet program & account cloning) proves 100% of Aegis program invariants, guardrails, and full atomic settlement on-chain:
+> 1. **Unconditional Sovereignty**: User withdrawal can never be blocked by an agent, policy, or paused state.
+> 2. **Hard Ceilings**: Max exit percentage (`exit_bps`) and slippage (`max_slippage_bps`) cannot exceed policy limits.
+> 3. **Non-Custodial Destination Invariant**: Target token destinations are strictly clamped to the owner's deterministically derived ATA across USDC, WSOL, and USDT, rejecting attacker destinations in 15 on-chain fuzz iterations.
+> 4. **Atomic Intermediate ATA Creation**: Idempotently initializes the position PDA's intermediate token account via CPI before swap invocation.
+> 5. **Verbatim CPI Route Execution**: Passes Jupiter's exact routing account vector without hardcoded slot assumptions, using position PDA signer authority.
+> 6. **Full End-to-End Settlement**: Verified on-chain with real before/after token balance increases (e.g. +770,402,633 USDC atoms delivered to owner ATA).
+>
+> Live network execution on devnet/mainnet will be captured in the submission demo recording as an operational showcase of the off-chain monitoring agent and frontend.
+

@@ -2,14 +2,18 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { parsePolicy } from '@/lib/policy';
 
-const DEFAULT_DRAWDOWN_BPS = 800; // 8%
-const DEFAULT_DEVIATION_BPS = 200; // 2%
-const DEFAULT_EXIT_BPS = 5000; // 50%
+const DEFAULT_DRAWDOWN_BPS = 800;    // 8%
+const DEFAULT_DEVIATION_BPS = 200;   // 2%
+const DEFAULT_EXIT_BPS = 5000;       // 50%
+const DEFAULT_SLIPPAGE_BPS = 50;     // 0.5%
 
 const parsedPolicySchema = z.object({
   drawdownThresholdBps: z.number().int().transform((val) => (val <= 0 ? DEFAULT_DRAWDOWN_BPS : val)),
   oracleDeviationThresholdBps: z.number().int().transform((val) => (val <= 0 ? DEFAULT_DEVIATION_BPS : val)),
   exitPercentBps: z.number().int().transform((val) => (val <= 0 ? DEFAULT_EXIT_BPS : val)),
+  // New for Solana build: slippage ceiling set by owner at policy creation
+  maxSlippageBps: z.number().int().min(1).max(500).default(DEFAULT_SLIPPAGE_BPS),
+  targetAsset: z.enum(['USDC', 'SOL', 'USDT']).default('USDC'),
   mode: z.enum(['Conservative', 'Balanced', 'Aggressive']),
   interpretation: z.string().min(1),
   confidence: z.number().min(0).max(1),
@@ -46,6 +50,11 @@ export async function POST(req: Request) {
               exitPercentBps: {
                 type: 'integer',
                 description: 'Portion of position to move to safety in basis points (1% = 100 bps, 50% = 5000 bps). If unspecified, default to 5000 bps (50%). MUST BE > 0.'
+              },
+              targetAsset: {
+                type: 'string',
+                enum: ['USDC', 'SOL', 'USDT'],
+                description: 'Target asset to swap into on Solana (USDC, SOL, or USDT). Defaults to USDC.'
               },
               mode: {
                 type: 'string',
@@ -121,8 +130,9 @@ export async function POST(req: Request) {
       drawdownThresholdBps: fallback.drawdownThresholdBps,
       oracleDeviationThresholdBps: fallback.oracleDeviationThresholdBps,
       exitPercentBps: fallback.exitPercentBps,
+      targetAsset: fallback.targetAsset,
       mode: fallback.mode,
-      interpretation: `Extracted ${fallback.drawdownThresholdBps / 100}% drawdown and ${fallback.exitPercentBps / 100}% exit threshold.`,
+      interpretation: `Extracted ${fallback.drawdownThresholdBps / 100}% drawdown and ${fallback.exitPercentBps / 100}% exit to ${fallback.targetAsset}.`,
       confidence: 0.95
     },
     source: 'deterministic',
