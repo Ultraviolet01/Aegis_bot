@@ -41,8 +41,9 @@ export interface PositionState {
   // 2-poll persistence counter
   consecutiveBreachCount: number;
 
-  // Custom corporate actions override for testing
+  // Custom corporate actions and multiplier overrides for live simulation
   customCorporateActions?: any[];
+  customMultiplier?: number;
 }
 
 export type CustomPriceProvider = (
@@ -249,7 +250,7 @@ export class AegisMonitor {
       multiplierState = null;
     }
 
-    const currentMultiplier = multiplierState?.currentMultiplier ?? 1.0;
+    const currentMultiplier = pos.customMultiplier ?? multiplierState?.currentMultiplier ?? 1.0;
     const corporateActions = pos.customCorporateActions ?? multiplierState?.actions ?? [];
 
     // Proactive suspension during the publish-to-activation window (§6)
