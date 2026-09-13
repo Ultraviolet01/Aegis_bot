@@ -22,7 +22,7 @@ wallet = "~/.config/solana/id.json"
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
 [test]
-startup_wait = 20000
+startup_wait = 60000
 
 [test.validator]
 url = "https://api.mainnet-beta.solana.com"
@@ -85,6 +85,55 @@ address = "585WvHT4x1pS8hLQXwWLe8Hy2UXpWcvGFazeVhbG8WjC"
 [[test.validator.clone]]
 # Tick Array 3 (Bdi2...)
 address = "Bdi2v6V8fFcxEwUJEgwK55GLJE3BP3N3q21Bun7DXqLu"
+
+# ── Raydium CLMM SPYX-USDC Pool 2 (6truu...) ──────────────────────────────────
+[[test.validator.clone]]
+# Pool Authority PDA (Drdec...)
+address = "DrdecJVzkaRsf1TQu1g7iFncaokikVTHqpzPjenjRySY"
+
+[[test.validator.clone]]
+# Pool State (6truu...)
+address = "6truu3rZuiB9rKQg4VYC3Dt3QwV7DgwGqXrYUcrvnDDE"
+
+[[test.validator.clone]]
+# SPYX Token Vault (Fewz...)
+address = "FewzDK5G6KngLBg1FAVNQvfaSuedfAjJ15GQbAcwQDda"
+
+[[test.validator.clone]]
+# USDC Token Vault (HJt8...)
+address = "HJt8Tjdsc9ms9i4WCZEzhzr4oyf3ANcdzXrNdLPFqm3M"
+
+[[test.validator.clone]]
+# Observation State (CiQu...)
+address = "CiQuPAfYp5v82vijk6u7wqFnaZqtGdJfUUSjDKAtT9ML"
+
+[[test.validator.clone]]
+# Tick Array 0 (3EmW...)
+address = "3EmW8zJDHrfgwpQJAt1oD6nxgQZLUwrCRSKk8Gr3iKRF"
+
+[[test.validator.clone]]
+# Tick Array 1 (GfnP...)
+address = "GfnPjYVcEdwamhGDNRystmEpNJZSBapzsnyDkqnpYFAj"
+
+[[test.validator.clone]]
+# Tick Array 2 (bfnA...)
+address = "bfnAPQbCU6tVz1Uetop624Y51vS7fRv9fMcjCjJkWoU"
+
+[[test.validator.clone]]
+# Tick Array 3 (4imX...)
+address = "4imXMzr5Ko4WYJ7H4htiiczVD7J3pYLken17S6pP8VRu"
+
+[[test.validator.clone]]
+# Tick Array 4 (ukgn...)
+address = "ukgnVfbs4VPpkpAMek743SAi4csf27W8K1myEXFHsby"
+
+[[test.validator.clone]]
+# Tick Array 5 (FgzU...)
+address = "FgzUFsCR8pV2xa7n42BjYvZGQLsQvR3Xr12ccdPXrGHd"
+
+[[test.validator.clone]]
+# SPL Memo Program
+address = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 
 # ── Token mints ────────────────────────────────────────────────────────────────
 [[test.validator.clone]]
