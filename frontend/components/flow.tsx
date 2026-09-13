@@ -45,8 +45,8 @@ export const FLOW_STEPS: Step[] = [
     Icon: DownloadIcon,
     detailTitle: 'You deposit — and stay the owner',
     detail:
-      'Tokenised equities and commodities go into AegisVault. The position is recorded against your address. No transfer of ownership, no pooled custody, no lockup.',
-    meta: ['AegisVault.deposit()', 'Your address, your position'],
+      'Tokenised equities (SPYX, NVDAX) go into your Position Vault PDA. The position is recorded against your Solana wallet. No transfer of ownership, no pooled custody, no lockup.',
+    meta: ['aegis::deposit()', 'Your address, your position'],
   },
   {
     title: 'Write a policy',
@@ -55,28 +55,28 @@ export const FLOW_STEPS: Step[] = [
     Icon: PenIcon,
     detailTitle: 'You describe the rule in your own words',
     detail:
-      '"If SPYX drops more than 8%, move half to USDC." Aegis parses that into explicit basis-point thresholds, shows you exactly what will be written, and you sign it. The policy lives on-chain in PolicyRegistry, and only you can change it.',
-    meta: ['PolicyRegistry.setPolicy()', 'Owner-only'],
+      '"If SPYX drops more than 8%, exit 50% cautiously into USDC." Aegis parses that into explicit basis-point thresholds, shows you exactly what will be written, and you sign it. The policy lives in your on-chain Policy PDA, and only you can change it.',
+    meta: ['aegis::set_policy()', 'Owner-only'],
   },
   {
     title: 'Agent watches',
-    note: 'Prices and oracle health, continuously.',
+    note: 'Multi-pool prices and corporate actions, continuously.',
     actor: 'agent',
     Icon: EyeIcon,
     detailTitle: 'The agent watches, and only watches',
     detail:
-      'An off-chain agent tracks price drawdown and oracle deviation against your thresholds. It holds no keys to your funds and cannot withdraw, transfer, or retarget anything. Its whole authority is the ability to trip a rule you already signed.',
-    meta: ['Off-chain monitor', 'No withdrawal rights'],
+      'An off-chain agent tracks multi-pool prices (Raydium + Whirlpool) with a 150 BPS divergence guard and monitors stock split corporate actions. It holds no keys to your funds and cannot withdraw. Its whole authority is the ability to trigger swap_and_deliver when persistent breach occurs.',
+    meta: ['Off-chain guardian', 'No withdrawal rights'],
   },
   {
     title: 'Trigger',
-    note: 'Pause, or route to a time-locked vault.',
+    note: 'Autonomous swap_and_deliver via Jupiter CPI.',
     actor: 'chain',
     Icon: PauseIcon,
     detailTitle: 'A breach fires your rule, not a decision',
     detail:
-      'When your threshold is crossed, the contract does what your policy says: pause the position, or route the specified share into EmergencyVault. Every action is bounded by the policy and recorded as an on-chain event you can audit.',
-    meta: ['Bounded by your policy', 'Emitted as events'],
+      'When your threshold is crossed across 2 consecutive polls, the agent calls swap_and_deliver. Jupiter aggregator executes the route via CPI and delivers USDC directly into your own wallet ATA. Every action is bounded by the policy exit clamp.',
+    meta: ['Bounded by policy clamp', 'Jupiter v6 CPI'],
   },
   {
     title: 'You withdraw',
@@ -85,8 +85,8 @@ export const FLOW_STEPS: Step[] = [
     Icon: VaultIcon,
     detailTitle: 'Withdrawal is always yours',
     detail:
-      'Whatever the agent did, the exit is unconditional and permissionless for you. A paused position can still be withdrawn. Funds in the time-locked vault return to you and nobody else — the timelock delays a release, it never redirects one.',
-    meta: ['No agent approval needed', 'No admin override'],
+      'Whatever the agent did, the exit is unconditional and permissionless for you. A paused position can still be withdrawn unconditionally. Delivered funds are already in your personal ATA.',
+    meta: ['Owner sovereignty', 'No admin override'],
   },
 ];
 
@@ -215,7 +215,7 @@ function FlowDiagram({ activeStep }: { activeStep: number }) {
         className="flow-diagram-svg"
       >
         {/* Connecting Lines */}
-        {/* Wallet to AegisVault */}
+        {/* Wallet to Position Vault */}
         <path
           d="M 125 70 L 255 70"
           stroke={activeStep === 0 || activeStep === 4 ? 'var(--accent)' : 'var(--line-strong)'}
@@ -223,7 +223,7 @@ function FlowDiagram({ activeStep }: { activeStep: number }) {
           strokeDasharray={activeStep === 0 ? '6 4' : undefined}
         />
 
-        {/* AegisVault to Agent Monitor */}
+        {/* Position Vault to Agent Monitor */}
         <path
           d="M 385 70 L 515 70"
           stroke={activeStep === 2 || activeStep === 3 ? 'var(--info)' : 'var(--line-strong)'}
@@ -231,7 +231,7 @@ function FlowDiagram({ activeStep }: { activeStep: number }) {
           strokeDasharray={activeStep === 2 ? '4 4' : undefined}
         />
 
-        {/* AegisVault to EmergencyVault */}
+        {/* Position Vault to Owner USDC ATA */}
         <path
           d="M 320 95 L 320 135 L 580 135 L 580 95"
           stroke={activeStep === 3 ? '#ff6b6b' : 'var(--line-strong)'}
@@ -268,7 +268,7 @@ function FlowDiagram({ activeStep }: { activeStep: number }) {
           </text>
         </g>
 
-        {/* Node 2: AegisVault */}
+        {/* Node 2: Position Vault */}
         <g transform="translate(255, 45)">
           <rect
             x="0"
@@ -281,10 +281,10 @@ function FlowDiagram({ activeStep }: { activeStep: number }) {
             strokeWidth={activeStep === 0 || activeStep === 1 || activeStep === 3 ? 2 : 1}
           />
           <text x="65" y="24" textAnchor="middle" fill="var(--fg)" fontSize="12" fontWeight="600">
-            AegisVault
+            Position Vault
           </text>
           <text x="65" y="38" textAnchor="middle" fill="var(--accent)" fontSize="9.5">
-            Non-Custodial Escrow
+            Solana Program PDA
           </text>
         </g>
 

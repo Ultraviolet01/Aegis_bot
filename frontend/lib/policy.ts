@@ -10,7 +10,7 @@
  * output is validated the same way before anyone signs it.
  *
  * Nothing here can act. It produces numbers the user reviews and signs into
- * PolicyRegistry themselves — setPolicy is owner-only.
+ * the on-chain Policy PDA themselves — setPolicy is owner-only.
  */
 
 export type PolicyMode = 'Conservative' | 'Balanced' | 'Aggressive';

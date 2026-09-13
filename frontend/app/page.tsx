@@ -146,7 +146,7 @@ export default function Landing() {
                   <div className="param specified"><small>Exit percentage</small><b>30%</b></div>
                   <div className="param fallback"><small>Risk mode</small><b>CAUTIOUS</b></div>
                 </div>
-                <div className="note">Policy hash <span className="mono">0x7a91…e31c</span> · immutable after signature</div>
+                <div className="note">Policy PDA <span className="mono">4HkKh3…tsAmL</span> · immutable on-chain state</div>
               </div>
             </div>
           </Reveal>

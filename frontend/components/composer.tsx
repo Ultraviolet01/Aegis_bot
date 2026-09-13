@@ -232,40 +232,48 @@ export function PolicyComposer({
 
         <div className="calldata">
           <div className="calldata-head">
-            <span>PolicyRegistry.setPolicy</span>
+            <span>aegis::set_policy</span>
             <span className="pill">owner-only</span>
           </div>
           <pre className="calldata-body">
-            <span className="calldata-fn">setPolicy</span>
+            <span className="calldata-fn">program.methods.setPolicy</span>
             <span className="calldata-punct">(</span>
-            {'\n  '}
-            <span className="calldata-arg">{positionId ?? '<positionId>'}</span>
-            <span className="calldata-punct">,</span>{' '}
-            <span className="calldata-comment">// positionId</span>
             {'\n  '}
             <span className="calldata-arg" data-field="drawdown">
               {parsed.drawdownThresholdBps}
             </span>
             <span className="calldata-punct">,</span>{' '}
-            <span className="calldata-comment">// drawdownThresholdBps</span>
+            <span className="calldata-comment">// drawdown_threshold_bps</span>
             {'\n  '}
             <span className="calldata-arg" data-field="deviation">
               {parsed.oracleDeviationThresholdBps}
             </span>
             <span className="calldata-punct">,</span>{' '}
-            <span className="calldata-comment">// oracleDeviationThresholdBps</span>
+            <span className="calldata-comment">// oracle_deviation_bps</span>
             {'\n  '}
             <span className="calldata-arg" data-field="exit">
               {parsed.exitPercentBps}
             </span>
             <span className="calldata-punct">,</span>{' '}
-            <span className="calldata-comment">// exitPercentBps</span>
+            <span className="calldata-comment">// exit_percent_bps</span>
+            {'\n  '}
+            <span className="calldata-arg">
+              {parsed.mode === 'Conservative' ? 30 : parsed.mode === 'Balanced' ? 50 : 100}
+            </span>
+            <span className="calldata-punct">,</span>{' '}
+            <span className="calldata-comment">// max_slippage_bps ({parsed.mode})</span>
             {'\n  '}
             <span className="calldata-arg" data-field="mode">
-              {['Conservative', 'Balanced', 'Aggressive'].indexOf(parsed.mode)}
+              {['Conservative', 'Balanced', 'Aggressive'].indexOf(parsed.mode) + 1}
+            </span>
+            <span className="calldata-punct">,</span>{' '}
+            <span className="calldata-comment">// mode</span>
+            {'\n  '}
+            <span className="calldata-arg">
+              {parsed.targetAsset === 'SOL' ? 'So11111111111111111111111111111111111111112' : parsed.targetAsset === 'USDT' ? 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' : 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'}
             </span>
             {'  '}
-            <span className="calldata-comment">// mode ({parsed.mode})</span>
+            <span className="calldata-comment">// target_mint ({parsed.targetAsset})</span>
             {'\n'}
             <span className="calldata-punct">)</span>
           </pre>
