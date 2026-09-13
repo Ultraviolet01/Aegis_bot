@@ -35,12 +35,21 @@ aegis_landing_mockup.html
 
 # Solana & Anchor
 .anchor/
-target/*
-!target/idl/
-!target/types/
+target/
 **/*-keypair.json
 id.json
 test-ledger/
+
+# Internal Docs & Diagnostics
+PROJECT_BRIEF.md
+POOL_VERIFICATION.md
+scripts/
+build_wsl.sh
+
+# Test suites & fixtures
+tests/
+agent-solana/test/
+
 
 
 # OS junk
