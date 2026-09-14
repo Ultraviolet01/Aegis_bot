@@ -171,7 +171,7 @@ export async function executeSwapAndDeliver(
       const acc = await getAccount(
         connection,
         ownerDestinationAta,
-        "confirmed",
+        connection.commitment || "confirmed",
         destinationTokenProgram
       );
       preSwapBalance = acc.amount;
@@ -219,7 +219,7 @@ export async function executeSwapAndDeliver(
     const postAccount = await getAccount(
       connection,
       ownerDestinationAta,
-      "confirmed",
+      connection.commitment || "confirmed",
       destinationTokenProgram
     );
     const postSwapBalance = postAccount.amount;

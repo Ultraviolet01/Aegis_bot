@@ -21,12 +21,14 @@ const CandlestickChart = dynamic(() => import('../../components/CandlestickChart
 interface SolanaStock {
   symbol: string;
   name: string;
-  category: 'Index' | 'Tech' | 'Commodity' | 'Semiconductor';
+  category: 'Index' | 'Tech' | 'Commodity' | 'Semiconductor' | 'Custom';
   basePrice: number;
   multiplier: number;
   mint: string;
   dailyChangePct: number;
   corporateActions: CorporateAction[];
+  isVerifiedXStock?: boolean;
+  authenticityLabel?: string;
 }
 
 const SOLANA_STOCKS: SolanaStock[] = [
@@ -38,6 +40,8 @@ const SOLANA_STOCKS: SolanaStock[] = [
     multiplier: 1.005714,
     dailyChangePct: 0.45,
     mint: 'XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W',
+    isVerifiedXStock: true,
+    authenticityLabel: 'Verified xStock',
     corporateActions: [
       {
         mint: 'XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W',
@@ -162,32 +166,36 @@ const SOLANA_STOCKS: SolanaStock[] = [
     symbol: 'GLDX',
     name: 'SPDR Gold Tokenized',
     category: 'Commodity',
-    basePrice: 188.45,
+    basePrice: 398.79,
     multiplier: 1.0,
     dailyChangePct: 0.32,
-    mint: 'GLDxxTokenizedMintAddressSolanaDevnet11111',
+    mint: 'Xsv9hRk1z5ystj9MhnA7Lq4vjSsLwzL2nxrwmwtD3re',
+    isVerifiedXStock: true,
+    authenticityLabel: 'Verified xStock',
     corporateActions: [],
   },
   {
     symbol: 'QQQX',
     name: 'Nasdaq 100 Tokenized',
     category: 'Index',
-    basePrice: 486.20,
-    multiplier: 1.0018,
+    basePrice: 710.87,
+    multiplier: 1.001955,
     dailyChangePct: 0.76,
-    mint: 'QQQxxTokenizedMintAddressSolanaDevnet11111',
+    mint: 'Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ',
+    isVerifiedXStock: true,
+    authenticityLabel: 'Verified xStock',
     corporateActions: [
       {
-        mint: 'QQQxxTokenizedMintAddressSolanaDevnet11111',
+        mint: 'Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ',
         symbol: 'QQQX',
         actionType: 'dividend',
-        newMultiplier: 1.0018,
-        oldMultiplier: 1.0,
-        exDate: '2026-09-01',
-        activationTime: Math.floor(Date.now() / 1000 - 11 * 86400),
-        applied: true,
+        newMultiplier: 1.002725,
+        oldMultiplier: 1.001955,
+        exDate: '2026-09-15',
+        activationTime: 1782086100,
+        applied: false,
         needsReview: false,
-        isDemo: true,
+        isDemo: false,
       },
     ],
   },
@@ -323,12 +331,12 @@ function pseudoRandom(seed: number) {
   return x - Math.floor(x);
 }
 
-function generateDemoHistory(ticker: string): OracleDataPoint[] {
-  const stock = SOLANA_STOCKS.find((s) => s.symbol === ticker) || SOLANA_STOCKS[0]!;
+function generateDemoHistory(ticker: string, customBasePrice?: number, customMultiplier?: number): OracleDataPoint[] {
+  const stock = SOLANA_STOCKS.find((s) => s.symbol === ticker);
   const points: OracleDataPoint[] = [];
   const now = Math.floor(Date.now() / 1000);
-  let price = stock.basePrice;
-  let multiplier = stock.multiplier;
+  let price = customBasePrice ?? stock?.basePrice ?? 100.0;
+  const multiplier = customMultiplier ?? stock?.multiplier ?? 1.0;
   const days = 90;
 
   // Hash ticker name to get distinct seed
@@ -341,7 +349,7 @@ function generateDemoHistory(ticker: string): OracleDataPoint[] {
     const ts = now - i * 86400;
     const r = pseudoRandom(seed + i);
     // Volatility bias based on ticker category
-    const vol = stock.category === 'Semiconductor' ? 0.03 : stock.category === 'Commodity' ? 0.012 : 0.022;
+    const vol = stock?.category === 'Semiconductor' ? 0.03 : stock?.category === 'Commodity' ? 0.012 : 0.022;
     price *= 1 + (r - 0.49) * vol;
 
     points.push({
@@ -402,6 +410,7 @@ function toCandles(points: OracleDataPoint[]): CandlePoint[] {
 
 export default function HistoryPage() {
   const [ticker, setTicker] = useState('SPYX');
+  const [customStock, setCustomStock] = useState<SolanaStock | null>(null);
   const [priceHistory, setPriceHistory] = useState<OracleDataPoint[]>(() => generateDemoHistory('SPYX'));
   const [corporateActions, setCorporateActions] = useState<CorporateAction[]>(() => {
     const s = SOLANA_STOCKS.find((item) => item.symbol === 'SPYX');
@@ -423,8 +432,9 @@ export default function HistoryPage() {
   const queryBottomRef = useRef<HTMLDivElement>(null);
 
   const activeStock = useMemo(() => {
+    if (customStock && customStock.symbol === ticker) return customStock;
     return SOLANA_STOCKS.find((s) => s.symbol === ticker) || SOLANA_STOCKS[0]!;
-  }, [ticker]);
+  }, [ticker, customStock]);
 
   // Click outside to close dropdown
   useEffect(() => {
@@ -438,20 +448,93 @@ export default function HistoryPage() {
   }, []);
 
   const selectToken = (symbol: string) => {
+    setCustomStock(null);
     setTicker(symbol);
     setIsDropdownOpen(false);
     setSearchFilter('');
     const stock = SOLANA_STOCKS.find((s) => s.symbol === symbol);
     if (stock) {
-      setPriceHistory(generateDemoHistory(symbol));
+      setPriceHistory(generateDemoHistory(symbol, stock.basePrice, stock.multiplier));
       setCorporateActions(stock.corporateActions);
     }
   };
 
-  const loadData = useCallback(async () => {
+  const selectMintAddress = useCallback(async (mintAddr: string) => {
+    const trimmed = mintAddr.trim();
+    if (!trimmed) return;
+    setIsDropdownOpen(false);
+    setSearchFilter('');
+
+    // Check if in SOLANA_STOCKS
+    const known = SOLANA_STOCKS.find(
+      (s) =>
+        s.mint.toLowerCase() === trimmed.toLowerCase() ||
+        s.symbol.toLowerCase() === trimmed.toLowerCase()
+    );
+    if (known) {
+      setCustomStock(null);
+      setTicker(known.symbol);
+      setPriceHistory(generateDemoHistory(known.symbol, known.basePrice, known.multiplier));
+      setCorporateActions(known.corporateActions);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
+      const res = await fetch(`/api/token-info?mint=${trimmed}`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to inspect token account');
+      }
+
+      const stockObj: SolanaStock = {
+        symbol: data.symbol || `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`,
+        name: data.name || 'Custom Solana Token',
+        category: 'Custom',
+        basePrice: data.priceUsd ?? 100.0,
+        multiplier: data.multiplier ?? 1.0,
+        mint: data.mint,
+        dailyChangePct: 0.0,
+        corporateActions: data.corporateActions || [],
+        isVerifiedXStock: data.isVerifiedXStock,
+        authenticityLabel: data.authenticityLabel,
+      };
+
+      setCustomStock(stockObj);
+      setTicker(stockObj.symbol);
+      setPriceHistory(generateDemoHistory(stockObj.symbol, stockObj.basePrice, stockObj.multiplier));
+      setCorporateActions(stockObj.corporateActions);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadData = useCallback(async () => {
+    if (customStock && customStock.symbol === ticker) return;
+    setLoading(true);
+    setError(null);
+    try {
+      // 1. First query on-chain token info & live Jupiter price
+      try {
+        const tokenInfoRes = await fetch(`/api/token-info?mint=${activeStock.mint}`);
+        if (tokenInfoRes.ok) {
+          const tokenData = await tokenInfoRes.json();
+          if (tokenData && tokenData.priceUsd) {
+            setPriceHistory(generateDemoHistory(ticker, tokenData.priceUsd, tokenData.multiplier));
+          }
+          if (tokenData?.corporateActions?.length > 0) {
+            setCorporateActions(tokenData.corporateActions);
+            return;
+          }
+        }
+      } catch {
+        // Fall back to REST or demo
+      }
+
+      // 2. Query xStocks API or fallback to calibrated demo
       const assetsRes = await fetch('/api/xstocks/assets');
       if (!assetsRes.ok) throw new Error(`xStocks API unavailable (HTTP ${assetsRes.status})`);
       const assets = await assetsRes.json();
@@ -483,13 +566,12 @@ export default function HistoryPage() {
       setCorporateActions(liveActions);
     } catch (err: any) {
       setError(err.message);
-      setPriceHistory(generateDemoHistory(ticker));
-      const s = SOLANA_STOCKS.find((item) => item.symbol === ticker);
-      setCorporateActions(s ? s.corporateActions : []);
+      setPriceHistory(generateDemoHistory(ticker, activeStock.basePrice, activeStock.multiplier));
+      setCorporateActions(activeStock.corporateActions);
     } finally {
       setLoading(false);
     }
-  }, [ticker]);
+  }, [ticker, activeStock, customStock]);
 
   useEffect(() => {
     loadData();
@@ -800,7 +882,7 @@ export default function HistoryPage() {
                 }}
               >
                 <div style={{ textAlign: 'left' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
                     <span
                       style={{
                         fontFamily: 'var(--display)',
@@ -825,9 +907,42 @@ export default function HistoryPage() {
                     >
                       {activeStock.category}
                     </span>
+                    {activeStock.isVerifiedXStock ? (
+                      <span
+                        style={{
+                          fontFamily: 'var(--mono)',
+                          fontSize: 9.5,
+                          padding: '1.5px 6px',
+                          borderRadius: 4,
+                          background: 'rgba(79, 224, 168, 0.12)',
+                          color: '#4fe0a8',
+                          border: '1px solid rgba(79, 224, 168, 0.35)',
+                          fontWeight: 600,
+                        }}
+                      >
+                        ✓ Verified xStock
+                      </span>
+                    ) : (
+                      <span
+                        style={{
+                          fontFamily: 'var(--mono)',
+                          fontSize: 9.5,
+                          padding: '1.5px 6px',
+                          borderRadius: 4,
+                          background: 'rgba(245, 158, 11, 0.12)',
+                          color: '#fbbf24',
+                          border: '1px solid rgba(245, 158, 11, 0.35)',
+                          fontWeight: 600,
+                        }}
+                      >
+                        ⚠ Unverified Token
+                      </span>
+                    )}
                   </div>
-                  <div style={{ fontFamily: 'var(--sans)', fontSize: 11.5, color: '#94a3b8', marginTop: 1 }}>
-                    {activeStock.name}
+                  <div style={{ fontFamily: 'var(--sans)', fontSize: 11.5, color: '#94a3b8', marginTop: 2, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span>{activeStock.name}</span>
+                    <span style={{ color: '#64748b', fontFamily: 'var(--mono)', fontSize: 10 }}>({activeStock.mint.slice(0, 4)}...{activeStock.mint.slice(-4)})</span>
+                    <span style={{ color: '#4fe0a8', fontFamily: 'var(--mono)', fontSize: 10 }}>· Multiplier: {activeStock.multiplier.toFixed(4)}x</span>
                   </div>
                 </div>
 
@@ -910,6 +1025,28 @@ export default function HistoryPage() {
                   {sym}
                 </button>
               ))}
+              <button
+                id="history-paste-address-btn"
+                onClick={() => {
+                  setIsDropdownOpen(true);
+                  setTimeout(() => {
+                    document.getElementById('token-search-input')?.focus();
+                  }, 50);
+                }}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: 6,
+                  border: '1px dashed rgba(79, 224, 168, 0.4)',
+                  background: 'rgba(79, 224, 168, 0.06)',
+                  color: '#4fe0a8',
+                  fontFamily: 'var(--mono)',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                + Paste Address
+              </button>
             </div>
           </div>
 
@@ -940,7 +1077,7 @@ export default function HistoryPage() {
                   autoFocus
                   value={searchFilter}
                   onChange={(e) => setSearchFilter(e.target.value)}
-                  placeholder="Search tokenized stock by symbol or name (e.g. NVDA, Apple, S&P)..."
+                  placeholder="Search symbol, name, or paste any Solana mint address (base58)..."
                   style={{
                     flex: 1,
                     background: 'rgba(255, 255, 255, 0.04)',
@@ -977,6 +1114,43 @@ export default function HistoryPage() {
                   ))}
                 </div>
               </div>
+
+              {/* Direct Mint Address Card if address is typed/pasted */}
+              {searchFilter.trim().length >= 32 && (
+                <div
+                  id="select-custom-mint"
+                  onClick={() => selectMintAddress(searchFilter.trim())}
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: 10,
+                    background: 'rgba(79, 224, 168, 0.12)',
+                    border: '1px solid rgba(79, 224, 168, 0.45)',
+                    cursor: 'pointer',
+                    marginBottom: 12,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, color: '#4fe0a8' }}>
+                        Inspect Custom Solana Mint Address
+                      </span>
+                      <span style={{ fontSize: 9.5, color: '#94a3b8', background: 'rgba(255, 255, 255, 0.06)', padding: '2px 6px', borderRadius: 4, fontFamily: 'var(--mono)' }}>
+                        On-Chain / Jupiter Live
+                      </span>
+                    </div>
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: '#cbd5e1', marginTop: 3 }}>
+                      {searchFilter.trim()}
+                    </div>
+                  </div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: '#4fe0a8', fontWeight: 600 }}>
+                    Load Token →
+                  </div>
+                </div>
+              )}
 
               {/* Tokens Grid */}
               <div

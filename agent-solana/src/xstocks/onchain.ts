@@ -1,5 +1,5 @@
 import { Connection, PublicKey } from "@solana/web3.js";
-import { getMint, getScaledUiAmountConfig, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { getMint, getScaledUiAmountConfig, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { CorporateAction } from "./client";
 
 export interface OnChainMultiplierState {
@@ -22,6 +22,7 @@ import { classifyCorporateAction } from "./multiplier";
  *
  * This provides a zero-dependency, tamper-proof fallback for corporate action multipliers
  * directly from Solana RPC without relying on external REST APIs or third-party launch schedules.
+ * Gracefully falls back to multiplier = 1.0 for standard SPL tokens or non-scaled mints.
  */
 export async function getOnChainMultiplierState(
   connection: Connection,
@@ -75,7 +76,47 @@ export async function getOnChainMultiplierState(
       activationTime: hasPendingAction ? activationTime : null,
       actions,
     };
-  } catch (err) {
+  } catch {
+    // If not a Token-2022 mint, verify whether it's a valid standard SPL token
+    try {
+      const stdMint = await getMint(
+        connection,
+        mintPubkey,
+        "confirmed",
+        TOKEN_PROGRAM_ID
+      );
+      if (stdMint) {
+        return {
+          currentMultiplier: 1.0,
+          newMultiplier: null,
+          activationTime: null,
+          actions: [],
+        };
+      }
+    } catch {
+      // Account does not exist or is not a readable mint
+    }
     return null;
+  }
+}
+
+/**
+ * Checks if a mint has the Token-2022 Scaled UI Amount extension active.
+ */
+export async function hasScaledUiAmountExtension(
+  connection: Connection,
+  mintPubkey: PublicKey
+): Promise<boolean> {
+  try {
+    const mintInfo = await getMint(
+      connection,
+      mintPubkey,
+      "confirmed",
+      TOKEN_2022_PROGRAM_ID
+    );
+    const config = getScaledUiAmountConfig(mintInfo);
+    return config !== null;
+  } catch {
+    return false;
   }
 }

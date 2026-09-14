@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useCallback, useId } from 'react';
+import { useState, useCallback, useId, useEffect } from 'react';
 import Link from 'next/link';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { Transaction } from '@solana/web3.js';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,8 @@ interface GuardedPosition {
   };
   headroomPct: number;
   status: 'protected' | 'monitoring' | 'breached';
+  positionPubkey?: string;
+  index?: number;
 }
 
 const DEMO_POSITIONS: GuardedPosition[] = [
@@ -47,30 +50,49 @@ const DEMO_POSITIONS: GuardedPosition[] = [
     policy: { drawdownBps: 800, exitBps: 7500, target: 'USDC' },
     headroomPct: 5.8,
     status: 'protected',
+    positionPubkey: 'demo-spyx-1',
   },
   {
     symbol: 'GLDX',
     name: 'Physical Gold Tokenized',
-    mint: 'GLDxxTokenizedMintAddressDevnet1111111111111',
+    mint: 'Xsv9hRk1z5ystj9MhnA7Lq4vjSsLwzL2nxrwmwtD3re',
     balance: 44.2,
     priceUsd: 188.45,
     multiplier: 1.0,
     policy: { drawdownBps: 1000, exitBps: 6000, target: 'USDT' },
     headroomPct: 8.2,
     status: 'protected',
+    positionPubkey: 'demo-gldx-1',
   },
   {
     symbol: 'QQQX',
     name: 'Nasdaq 100 Tokenized',
-    mint: 'QQQxxTokenizedMintAddressDevnet1111111111111',
+    mint: 'Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ',
     balance: 10.4,
     priceUsd: 492.10,
     multiplier: 1.0,
     policy: { drawdownBps: 600, exitBps: 5000, target: 'USDC' },
     headroomPct: 4.1,
     status: 'protected',
+    positionPubkey: 'demo-qqqx-1',
   },
 ];
+
+const KNOWN_MINTS: Record<string, string> = {
+  SPYX: 'XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W',
+  GLDX: 'Xsv9hRk1z5ystj9MhnA7Lq4vjSsLwzL2nxrwmwtD3re',
+  QQQX: 'Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ',
+  NVDAX: 'Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh',
+};
+
+const DEFAULT_PRICES: Record<string, number> = {
+  SPYX: 539.20,
+  GLDX: 188.45,
+  QQQX: 492.10,
+  NVDAX: 128.50,
+  AAPLX: 224.30,
+  TSLAX: 245.80,
+};
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -186,11 +208,89 @@ function PolicyPreviewCard({ policy }: { policy: ParsedPolicy }) {
 // ─── Main page ─────────────────────────────────────────────────────────────────
 
 export default function AppPage() {
-  const { publicKey, connected } = useWallet();
+  const { publicKey, connected, sendTransaction } = useWallet();
   const { connection } = useConnection();
 
+  const [testWallet, setTestWallet] = useState<string | null>(null);
   const [demoMode, setDemoMode] = useState(false);
   const [tab, setTab] = useState<Tab>('overview');
+
+  // Real on-chain positions state
+  const [positions, setPositions] = useState<GuardedPosition[]>([]);
+  const [loadingPositions, setLoadingPositions] = useState(false);
+  const [walletBalances, setWalletBalances] = useState<Record<string, number>>({});
+  const [rpcOffline, setRpcOffline] = useState(false);
+
+  // Mutable demo state so simulated deposits/withdrawals reflect immediately
+  const [demoPositions, setDemoPositions] = useState<GuardedPosition[]>(DEMO_POSITIONS);
+  const [demoWalletBalances, setDemoWalletBalances] = useState<Record<string, number>>({
+    SPYX: 42.50,
+    GLDX: 120.0,
+    QQQX: 35.0,
+    NVDAX: 15.0,
+  });
+
+  // Sync test wallet from URL search params if provided (e.g. ?wallet=GmaDrpp...)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const w = params.get('wallet');
+      if (w) {
+        setTestWallet(w);
+      }
+    }
+  }, []);
+
+  const isRealWalletConnected = !!publicKey || !!testWallet;
+  const activeAddress = publicKey
+    ? publicKey.toBase58()
+    : testWallet || (demoMode ? '7EYnhrCQZKpFz4eW8v9xQ3kLMxS8gDevnetDemoAcct' : '');
+  const isUserActive = isRealWalletConnected || demoMode;
+
+  // Fetch real on-chain positions for connected wallet
+  const fetchPositions = useCallback(async () => {
+    if (!isRealWalletConnected || !activeAddress) {
+      setPositions([]);
+      setWalletBalances({});
+      return;
+    }
+    setLoadingPositions(true);
+    try {
+      const res = await fetch(`/api/positions?owner=${activeAddress}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setRpcOffline(true);
+        return;
+      }
+      setRpcOffline(false);
+      if (data.positions && Array.isArray(data.positions)) {
+        setPositions(data.positions);
+      } else {
+        setPositions([]);
+      }
+      if (data.walletBalances) {
+        setWalletBalances(data.walletBalances);
+      }
+    } catch (e) {
+      console.error('Failed to query on-chain positions:', e);
+      setRpcOffline(true);
+      setPositions([]);
+    } finally {
+      setLoadingPositions(false);
+    }
+  }, [isRealWalletConnected, activeAddress]);
+
+  useEffect(() => {
+    fetchPositions();
+  }, [fetchPositions]);
+
+  const displayedPositions = isRealWalletConnected
+    ? positions
+    : demoMode
+    ? demoPositions
+    : [];
+
+  const totalGuardedUsd = displayedPositions.reduce((acc, p) => acc + p.balance * p.priceUsd * p.multiplier, 0);
 
   // Policy parsing state
   const [policyText, setPolicyText] = useState('');
@@ -200,8 +300,16 @@ export default function AppPage() {
 
   // Position deposit state
   const [depositAsset, setDepositAsset] = useState('SPYX');
+  const [depositMint, setDepositMint] = useState('XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W');
   const [depositAmount, setDepositAmount] = useState('');
   const [slippageTolerance, setSlippageTolerance] = useState('0.5');
+  const [isDepositing, setIsDepositing] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState<string | null>(null);
+
+  const fallbackMint = KNOWN_MINTS[depositAsset];
+  const currentWalletBalance = isRealWalletConnected
+    ? (walletBalances[depositMint] ?? (fallbackMint ? walletBalances[fallbackMint] : undefined) ?? 0)
+    : (demoMode ? (demoWalletBalances[depositAsset] ?? 42.50) : 0);
 
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
 
@@ -243,10 +351,168 @@ export default function AppPage() {
     showToast('Policy signed and registered with Aegis guardian engine', 'ok');
   }, [parsedPolicy]);
 
-  const isUserActive = connected || demoMode;
-  const activeAddress = publicKey ? publicKey.toBase58() : '7EYnhrCQZKpFz4eW8v9xQ3kLMxS8gDevnetDemoAcct';
+  const handleDeposit = useCallback(async () => {
+    const mint = depositMint || KNOWN_MINTS[depositAsset] || 'XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W';
+    const numAmount = Number(depositAmount);
+    if (!depositAmount || numAmount <= 0) {
+      showToast('Please enter an amount to deposit', 'err');
+      return;
+    }
+    if (numAmount > currentWalletBalance) {
+      showToast('Deposit amount exceeds available wallet balance', 'err');
+      return;
+    }
 
-  const totalGuardedUsd = DEMO_POSITIONS.reduce((acc, p) => acc + p.balance * p.priceUsd * p.multiplier, 0);
+    setIsDepositing(true);
+    try {
+      if (demoMode && !isRealWalletConnected) {
+        const newDemoPos: GuardedPosition = {
+          symbol: depositAsset,
+          name: depositAsset === 'SPYX' ? 'S&P 500 Tokenized' : depositAsset === 'GLDX' ? 'Physical Gold Tokenized' : depositAsset === 'QQQX' ? 'Nasdaq 100 Tokenized' : `${depositAsset} Tokenized`,
+          mint: mint,
+          balance: numAmount,
+          priceUsd: DEFAULT_PRICES[depositAsset] || 100.0,
+          multiplier: 1.0,
+          policy: {
+            drawdownBps: parsedPolicy?.drawdownThresholdBps || 800,
+            exitBps: parsedPolicy?.exitPercentBps || 7500,
+            target: (parsedPolicy?.targetAsset as any) || 'USDC',
+          },
+          headroomPct: +((parsedPolicy?.drawdownThresholdBps || 800) / 100).toFixed(1),
+          status: 'protected',
+          positionPubkey: `demo-${Date.now()}`,
+          index: demoPositions.length,
+        };
+
+        setDemoPositions((prev) => [newDemoPos, ...prev]);
+        setDemoWalletBalances((prev) => ({
+          ...prev,
+          [depositAsset]: Math.max(0, (prev[depositAsset] ?? 42.50) - numAmount),
+        }));
+
+        showToast(`✓ Deposited ${depositAmount} ${depositAsset} into guarded vault (Demo)`, 'ok');
+        setDepositAmount('');
+        setTab('overview');
+        return;
+      }
+
+      const res = await fetch('/api/deposit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          owner: activeAddress,
+          mint,
+          amount: numAmount,
+          slippageTolerance: Number(slippageTolerance),
+          policy: parsedPolicy,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to deposit into vault');
+      }
+
+      if (data.transaction && publicKey) {
+        const txBuf = Buffer.from(data.transaction, 'base64');
+        const tx = Transaction.from(txBuf);
+        let sig: string;
+        if (sendTransaction) {
+          sig = await sendTransaction(tx, connection);
+        } else if ((window as any).solana?.signAndSendTransaction) {
+          const signed = await (window as any).solana.signAndSendTransaction(tx);
+          sig = signed.signature;
+        } else {
+          throw new Error('No compatible wallet signing method found');
+        }
+
+        showToast(`Transaction submitted: ${sig.slice(0, 8)}... Confirming`, 'ok');
+        try {
+          const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+          await connection.confirmTransaction(
+            { signature: sig, ...latestBlockhash },
+            'confirmed'
+          );
+        } catch (confErr) {
+          console.warn('Confirmation check warning:', confErr);
+        }
+        showToast(`✓ Deposited ${depositAmount} ${depositAsset} into on-chain Aegis vault!`, 'ok');
+      } else {
+        showToast(`✓ Deposited ${depositAmount} ${depositAsset} into on-chain Aegis vault!`, 'ok');
+      }
+
+      setDepositAmount('');
+      await new Promise((r) => setTimeout(r, 400));
+      await fetchPositions();
+      setTab('overview');
+    } catch (e: any) {
+      console.error('Deposit error:', e);
+      showToast(e.message || 'Deposit failed', 'err');
+    } finally {
+      setIsDepositing(false);
+    }
+  }, [depositMint, depositAsset, depositAmount, currentWalletBalance, demoMode, isRealWalletConnected, activeAddress, slippageTolerance, parsedPolicy, publicKey, sendTransaction, connection, fetchPositions, demoPositions.length]);
+
+  const handleWithdraw = useCallback(async (positionPubkey: string, symbol: string) => {
+    setIsWithdrawing(positionPubkey || symbol);
+    try {
+      if (demoMode && !isRealWalletConnected) {
+        const idx = demoPositions.findIndex((p) => p.positionPubkey === positionPubkey || p.symbol === symbol);
+        const removed = idx >= 0 ? demoPositions[idx] : undefined;
+        if (removed) {
+          setDemoPositions((prev) => prev.filter((_, i) => i !== idx));
+          setDemoWalletBalances((prev) => ({
+            ...prev,
+            [removed.symbol]: (prev[removed.symbol] ?? 0) + removed.balance,
+          }));
+        }
+        showToast(`✓ Withdrawn ${symbol} position back to demo wallet`, 'ok');
+        return;
+      }
+
+      const res = await fetch('/api/withdraw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          owner: activeAddress,
+          positionPubkey,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Withdrawal failed');
+      }
+
+      if (data.transaction && publicKey) {
+        const txBuf = Buffer.from(data.transaction, 'base64');
+        const tx = Transaction.from(txBuf);
+        let sig: string;
+        if (sendTransaction) {
+          sig = await sendTransaction(tx, connection);
+        } else if ((window as any).solana?.signAndSendTransaction) {
+          const signed = await (window as any).solana.signAndSendTransaction(tx);
+          sig = signed.signature;
+        } else {
+          throw new Error('No compatible wallet signing method found');
+        }
+        const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+        await connection.confirmTransaction(
+          { signature: sig, ...latestBlockhash },
+          'confirmed'
+        );
+      }
+
+      showToast(`✓ Successfully withdrawn ${symbol} back to wallet`, 'ok');
+      await new Promise((r) => setTimeout(r, 400));
+      await fetchPositions();
+    } catch (e: any) {
+      console.error('Withdraw error:', e);
+      showToast(e.message || 'Withdrawal failed', 'err');
+    } finally {
+      setIsWithdrawing(null);
+    }
+  }, [demoMode, isRealWalletConnected, demoPositions, activeAddress, publicKey, sendTransaction, connection, fetchPositions]);
 
   const navTabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
@@ -311,6 +577,27 @@ export default function AppPage() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {testWallet && !connected && (
+              <button
+                id="disconnect-test-wallet-btn"
+                onClick={() => {
+                  setTestWallet(null);
+                  if (typeof window !== 'undefined') {
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete('wallet');
+                    window.history.replaceState({}, '', url.toString());
+                  }
+                }}
+                style={{
+                  padding: '7px 13px', borderRadius: 8,
+                  border: '1px solid rgba(244, 124, 108, 0.3)',
+                  background: 'rgba(244, 124, 108, 0.1)',
+                  color: '#f47c6c', fontFamily: 'var(--mono)', fontSize: 11, cursor: 'pointer',
+                }}
+              >
+                Disconnect Test Keypair
+              </button>
+            )}
             {!connected && (
               <button
                 id="toggle-demo-mode-btn"
@@ -393,18 +680,33 @@ export default function AppPage() {
             <p style={{
               color: '#94a3b8', fontSize: 15, maxWidth: 440, margin: '0 auto 28px', lineHeight: 1.6,
             }}>
-              Connect Phantom or Solflare on Solana devnet, or test the live guardian with simulated vault positions.
+              Connect Phantom or Solflare on Solana, inspect test wallet holding, or explore simulated vault positions.
             </p>
 
             <div style={{ display: 'flex', justifyContent: 'center', gap: 14, flexWrap: 'wrap' }}>
               <button
-                id="enter-demo-btn"
-                onClick={() => setDemoMode(true)}
+                id="connect-test-wallet-btn"
+                onClick={() => {
+                  setDemoMode(false);
+                  setTestWallet('GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB');
+                }}
                 style={{
                   padding: '12px 24px', borderRadius: 10,
                   background: 'var(--mint)', color: '#091912',
                   border: 'none', fontWeight: 600, fontSize: 14,
                   cursor: 'pointer', transition: 'opacity 0.15s',
+                }}
+              >
+                Connect Test Wallet (GmaDrpp...)
+              </button>
+              <button
+                id="enter-demo-btn"
+                onClick={() => setDemoMode(true)}
+                style={{
+                  padding: '12px 24px', borderRadius: 10,
+                  background: 'rgba(255, 255, 255, 0.05)', color: 'var(--white)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  fontWeight: 500, fontSize: 14, cursor: 'pointer',
                 }}
               >
                 Explore Demo Vault
@@ -431,6 +733,28 @@ export default function AppPage() {
         ) : (
           /* Active Dashboard View */
           <>
+            {rpcOffline && isRealWalletConnected && (
+              <div style={{
+                marginBottom: 20, padding: '12px 18px', borderRadius: 8,
+                background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.25)',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                fontFamily: 'var(--mono)', fontSize: 12, color: '#fca5a5',
+              }}>
+                <div>
+                  ⚠️ <strong>Local Solana RPC unreachable:</strong> Persistent validator on localhost:8899 is not responding. Run <code>scripts/start_persistent_validator.sh</code> or switch to Demo Mode.
+                </div>
+                <button
+                  onClick={() => setDemoMode(true)}
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.2)', border: '1px solid rgba(239, 68, 68, 0.4)',
+                    color: '#fff', borderRadius: 6, padding: '4px 12px', fontSize: 11, cursor: 'pointer',
+                  }}
+                >
+                  Switch to Demo
+                </button>
+              </div>
+            )}
+
             {/* ── Top Account & Status Header ── */}
             <div style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -453,9 +777,18 @@ export default function AppPage() {
                     fontFamily: 'var(--mono)', fontSize: 11, color: '#94a3b8',
                     background: 'rgba(255, 255, 255, 0.04)', padding: '2px 8px', borderRadius: 4,
                   }}>
-                    {activeAddress.slice(0, 6)}...{activeAddress.slice(-4)}
+                    {activeAddress ? `${activeAddress.slice(0, 6)}...${activeAddress.slice(-4)}` : 'Disconnected'}
                   </span>
-                  {demoMode && !connected && (
+                  {testWallet && !connected && (
+                    <span style={{
+                      fontFamily: 'var(--mono)', fontSize: 10, color: '#4fe0a8',
+                      background: 'rgba(79, 224, 168, 0.1)', padding: '2px 7px', borderRadius: 4,
+                      border: '1px solid rgba(79, 224, 168, 0.25)',
+                    }}>
+                      Test Keypair Connected
+                    </span>
+                  )}
+                  {demoMode && !isRealWalletConnected && (
                     <span style={{
                       fontFamily: 'var(--mono)', fontSize: 10, color: '#d4aa46',
                       background: 'rgba(212, 170, 70, 0.1)', padding: '2px 7px', borderRadius: 4,
@@ -509,7 +842,7 @@ export default function AppPage() {
                       {formatCurrency(totalGuardedUsd)}
                     </div>
                     <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: '#4fe0a8' }}>
-                      3 active asset vaults guarded
+                      {displayedPositions.length} active asset vault{displayedPositions.length === 1 ? '' : 's'} guarded
                     </div>
                   </div>
 
@@ -603,54 +936,65 @@ export default function AppPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {DEMO_POSITIONS.map((pos) => {
-                          const val = pos.balance * pos.priceUsd * pos.multiplier;
-                          return (
-                            <tr key={pos.symbol} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)', fontFamily: 'var(--mono)', fontSize: 12 }}>
-                              <td style={{ padding: '16px 22px' }}>
-                                <div style={{ fontWeight: 600, color: 'var(--white)' }}>{pos.symbol}</div>
-                                <div style={{ fontSize: 10, color: '#64748b' }}>{pos.name}</div>
-                              </td>
-                              <td style={{ padding: '16px 18px', color: '#cbd5e1' }}>
-                                {pos.balance.toFixed(2)} tokens
-                              </td>
-                              <td style={{ padding: '16px 18px', color: '#cbd5e1' }}>
-                                ${(pos.priceUsd * pos.multiplier).toFixed(2)}
-                              </td>
-                              <td style={{ padding: '16px 18px', fontWeight: 600, color: 'var(--white)' }}>
-                                {formatCurrency(val)}
-                              </td>
-                              <td style={{ padding: '16px 18px', color: '#94a3b8', fontSize: 11 }}>
-                                Drop &gt; {(pos.policy.drawdownBps / 100).toFixed(0)}% → {(pos.policy.exitBps / 100).toFixed(0)}% to {pos.policy.target}
-                              </td>
-                              <td style={{ padding: '16px 18px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                  <div style={{
-                                    width: 80, height: 6, background: 'rgba(255, 255, 255, 0.08)',
-                                    borderRadius: 3, overflow: 'hidden',
-                                  }}>
+                        {displayedPositions.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} style={{ padding: '36px 22px', textAlign: 'center', color: '#64748b', fontFamily: 'var(--mono)', fontSize: 12 }}>
+                              {loadingPositions
+                                ? 'Scanning on-chain guarded positions…'
+                                : 'No guarded positions found. Deposit tokenized stocks in the Positions tab to activate protection.'}
+                            </td>
+                          </tr>
+                        ) : (
+                          displayedPositions.map((pos, idx) => {
+                            const val = pos.balance * pos.priceUsd * pos.multiplier;
+                            const rowKey = pos.positionPubkey || `${pos.symbol}-${pos.mint}-${idx}`;
+                            return (
+                              <tr key={rowKey} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)', fontFamily: 'var(--mono)', fontSize: 12 }}>
+                                <td style={{ padding: '16px 22px' }}>
+                                  <div style={{ fontWeight: 600, color: 'var(--white)' }}>{pos.symbol}</div>
+                                  <div style={{ fontSize: 10, color: '#64748b' }}>{pos.name}</div>
+                                </td>
+                                <td style={{ padding: '16px 18px', color: '#cbd5e1' }}>
+                                  {pos.balance.toFixed(2)} tokens
+                                </td>
+                                <td style={{ padding: '16px 18px', color: '#cbd5e1' }}>
+                                  ${(pos.priceUsd * pos.multiplier).toFixed(2)}
+                                </td>
+                                <td style={{ padding: '16px 18px', fontWeight: 600, color: 'var(--white)' }}>
+                                  {formatCurrency(val)}
+                                </td>
+                                <td style={{ padding: '16px 18px', color: '#94a3b8', fontSize: 11 }}>
+                                  Drop &gt; {(pos.policy.drawdownBps / 100).toFixed(0)}% → {(pos.policy.exitBps / 100).toFixed(0)}% to {pos.policy.target}
+                                </td>
+                                <td style={{ padding: '16px 18px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                     <div style={{
-                                      width: `${Math.min(pos.headroomPct * 10, 100)}%`, height: '100%',
-                                      background: '#10b981', borderRadius: 3,
-                                    }} />
+                                      width: 80, height: 6, background: 'rgba(255, 255, 255, 0.08)',
+                                      borderRadius: 3, overflow: 'hidden',
+                                    }}>
+                                      <div style={{
+                                        width: `${Math.min(pos.headroomPct * 10, 100)}%`, height: '100%',
+                                        background: '#10b981', borderRadius: 3,
+                                      }} />
+                                    </div>
+                                    <span style={{ fontSize: 10.5, color: '#10b981' }}>
+                                      +{pos.headroomPct}%
+                                    </span>
                                   </div>
-                                  <span style={{ fontSize: 10.5, color: '#10b981' }}>
-                                    +{pos.headroomPct}%
+                                </td>
+                                <td style={{ padding: '16px 22px', textAlign: 'right' }}>
+                                  <span style={{
+                                    padding: '3px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                                    background: 'rgba(16, 185, 129, 0.12)', color: '#10b981',
+                                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                                  }}>
+                                    Protected
                                   </span>
-                                </div>
-                              </td>
-                              <td style={{ padding: '16px 22px', textAlign: 'right' }}>
-                                <span style={{
-                                  padding: '3px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
-                                  background: 'rgba(16, 185, 129, 0.12)', color: '#10b981',
-                                  border: '1px solid rgba(16, 185, 129, 0.25)',
-                                }}>
-                                  Protected
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -719,7 +1063,10 @@ export default function AppPage() {
                       {['SPYX', 'GLDX', 'QQQX'].map((sym) => (
                         <button
                           key={sym}
-                          onClick={() => setDepositAsset(sym)}
+                          onClick={() => {
+                            setDepositAsset(sym);
+                            setDepositMint(KNOWN_MINTS[sym] || '');
+                          }}
                           style={{
                             padding: '10px 8px', borderRadius: 8,
                             background: depositAsset === sym ? 'rgba(79, 224, 168, 0.12)' : 'rgba(255, 255, 255, 0.03)',
@@ -744,7 +1091,7 @@ export default function AppPage() {
                         Deposit Amount
                       </label>
                       <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: '#4fe0a8' }}>
-                        Wallet: 42.50 {depositAsset}
+                        Wallet: {currentWalletBalance.toFixed(2)} {depositAsset}
                       </span>
                     </div>
 
@@ -773,7 +1120,7 @@ export default function AppPage() {
                         <button
                           key={pct}
                           onClick={() => {
-                            const max = 42.5;
+                            const max = currentWalletBalance;
                             const frac = pct === 'Max' ? 1 : parseInt(pct) / 100;
                             setDepositAmount((max * frac).toFixed(2));
                           }}
@@ -820,22 +1167,18 @@ export default function AppPage() {
                   {/* Submit Button */}
                   <button
                     id="open-position-btn"
-                    onClick={() => {
-                      if (!depositAmount || Number(depositAmount) <= 0) {
-                        showToast('Please enter an amount to deposit', 'err');
-                        return;
-                      }
-                      showToast(`Deposited ${depositAmount} ${depositAsset} into Aegis vault`, 'ok');
-                      setDepositAmount('');
-                    }}
+                    onClick={handleDeposit}
+                    disabled={isDepositing}
                     style={{
                       width: '100%', padding: '14px', borderRadius: 10,
-                      background: 'var(--mint)', color: '#0a1912',
-                      fontWeight: 600, fontSize: 14, border: 'none', cursor: 'pointer',
+                      background: isDepositing ? 'rgba(79, 224, 168, 0.5)' : 'var(--mint)',
+                      color: '#0a1912',
+                      fontWeight: 600, fontSize: 14, border: 'none',
+                      cursor: isDepositing ? 'wait' : 'pointer',
                       transition: 'opacity 0.15s',
                     }}
                   >
-                    Open Guarded Position
+                    {isDepositing ? 'Depositing to Aegis Vault…' : 'Open Guarded Position'}
                   </button>
                 </div>
 
@@ -856,41 +1199,54 @@ export default function AppPage() {
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                      {DEMO_POSITIONS.map((p) => (
-                        <div
-                          key={p.symbol}
-                          style={{
-                            padding: '14px 18px', borderRadius: 10,
-                            background: 'rgba(255, 255, 255, 0.02)',
-                            border: '1px solid rgba(255, 255, 255, 0.05)',
-                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                          }}
-                        >
-                          <div>
-                            <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600, color: 'var(--white)' }}>
-                              {p.symbol} · {p.balance} shares
-                            </div>
-                            <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: '#64748b', marginTop: 2 }}>
-                              Normalized Price: ${(p.priceUsd * p.multiplier).toFixed(2)}
-                            </div>
-                          </div>
-
-                          <div style={{ textAlign: 'right' }}>
-                            <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600, color: '#4fe0a8' }}>
-                              {formatCurrency(p.balance * p.priceUsd * p.multiplier)}
-                            </div>
-                            <button
-                              onClick={() => showToast(`Initiated withdrawal for ${p.symbol} position`, 'ok')}
+                      {displayedPositions.length === 0 ? (
+                        <div style={{ padding: '16px', textAlign: 'center', color: '#64748b', fontFamily: 'var(--mono)', fontSize: 11 }}>
+                          {loadingPositions ? 'Loading positions…' : 'No active vault positions'}
+                        </div>
+                      ) : (
+                        displayedPositions.map((p, idx) => {
+                          const itemKey = p.positionPubkey || `${p.symbol}-${p.mint}-${idx}`;
+                          const isW = isWithdrawing === (p.positionPubkey || p.symbol);
+                          return (
+                            <div
+                              key={itemKey}
                               style={{
-                                background: 'none', border: 'none', color: '#f47c6c',
-                                fontFamily: 'var(--mono)', fontSize: 10, cursor: 'pointer', padding: 0, marginTop: 4,
+                                padding: '14px 18px', borderRadius: 10,
+                                background: 'rgba(255, 255, 255, 0.02)',
+                                border: '1px solid rgba(255, 255, 255, 0.05)',
+                                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                               }}
                             >
-                              Withdraw
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                              <div>
+                                <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600, color: 'var(--white)' }}>
+                                  {p.symbol} · {p.balance.toFixed(2)} shares
+                                </div>
+                                <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: '#64748b', marginTop: 2 }}>
+                                  Normalized Price: ${(p.priceUsd * p.multiplier).toFixed(2)}
+                                </div>
+                              </div>
+
+                              <div style={{ textAlign: 'right' }}>
+                                <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600, color: '#4fe0a8' }}>
+                                  {formatCurrency(p.balance * p.priceUsd * p.multiplier)}
+                                </div>
+                                <button
+                                  disabled={!!isWithdrawing}
+                                  onClick={() => handleWithdraw(p.positionPubkey || '', p.symbol)}
+                                  style={{
+                                    background: 'none', border: 'none', color: isW ? '#64748b' : '#f47c6c',
+                                    fontFamily: 'var(--mono)', fontSize: 10,
+                                    cursor: isWithdrawing ? 'not-allowed' : 'pointer',
+                                    padding: 0, marginTop: 4,
+                                  }}
+                                >
+                                  {isW ? 'Withdrawing…' : 'Withdraw'}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
                     </div>
                   </div>
 

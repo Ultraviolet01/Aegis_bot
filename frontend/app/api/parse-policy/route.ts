@@ -30,7 +30,7 @@ export async function POST(req: Request) {
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (apiKey) {
-      const model = 'claude-3-5-haiku-20241022';
+      const model = 'claude-haiku-4-5';
 
       const tools = [
         {

@@ -59,7 +59,7 @@ export async function parsePolicyLlm(input: string): Promise<ParsedPolicy> {
         mode: data.policy.mode as PolicyMode,
         warnings: llmWarnings,
         source: 'llm',
-        model: data.model || 'claude-3-5-haiku-20241022',
+        model: data.model || 'claude-haiku-4-5',
       };
     }
   } catch (err) {

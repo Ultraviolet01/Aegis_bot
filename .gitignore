@@ -43,6 +43,11 @@ test-ledger/
 # Internal Docs & Diagnostics
 PROJECT_BRIEF.md
 POOL_VERIFICATION.md
+memory.md
+architecture.md
+project-plan.md
+handoff.md
+prd.md
 scripts/
 build_wsl.sh
 
