@@ -75,7 +75,7 @@ export async function GET(req: NextRequest) {
 
     for (const { pubkey, account } of positionAccounts) {
       const data = account.data;
-      if (data.length < 115) continue;
+      if (data.length < 90) continue;
 
       // Position layout:
       // 0..8: discriminator
@@ -83,16 +83,31 @@ export async function GET(req: NextRequest) {
       // 40..72: asset_mint (Pubkey)
       // 72..80: amount (u64 LE)
       // 80: policy Option tag (1 = Some, 0 = None)
-      // 81..113: policy (Pubkey)
-      // 113: paused (bool)
-      // 114: bump (u8)
-      // 115..123: index (u64 LE)
+      // If Some:
+      //   81..113: policy (Pubkey)
+      //   113: paused (bool)
+      //   114: bump (u8)
+      //   115..123: index (u64 LE)
+      // If None:
+      //   81: paused (bool)
+      //   82: bump (u8)
+      //   83..91: index (u64 LE)
       const assetMint = new PublicKey(data.subarray(40, 72)).toBase58();
       const rawAmount = data.readBigUInt64LE(72);
       const hasPolicy = data[80] === 1;
-      const policyPubkey = hasPolicy ? new PublicKey(data.subarray(81, 113)).toBase58() : null;
-      const paused = data[113] === 1;
-      const index = Number(data.readBigUInt64LE(115));
+
+      let policyPubkey: string | null = null;
+      let paused = false;
+      let index = 0;
+
+      if (hasPolicy && data.length >= 115) {
+        policyPubkey = new PublicKey(data.subarray(81, 113)).toBase58();
+        paused = data[113] === 1;
+        index = data.length >= 123 ? Number(data.readBigUInt64LE(115)) : 0;
+      } else {
+        paused = data[81] === 1;
+        index = data.length >= 91 ? Number(data.readBigUInt64LE(83)) : 0;
+      }
 
       const known = KNOWN_ASSETS[assetMint];
       const symbol = known?.symbol || `${assetMint.slice(0, 4)}...${assetMint.slice(-4)}`;

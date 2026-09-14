@@ -32,6 +32,7 @@ interface GuardedPosition {
     drawdownBps: number;
     exitBps: number;
     target: string;
+    mode?: string;
   };
   headroomPct: number;
   status: 'protected' | 'monitoring' | 'breached';
@@ -264,7 +265,13 @@ export default function AppPage() {
       }
       setRpcOffline(false);
       if (data.positions && Array.isArray(data.positions)) {
-        setPositions(data.positions);
+        setPositions((prev) => {
+          const onChainKeys = new Set(data.positions.map((p: GuardedPosition) => p.positionPubkey));
+          const pendingOptimistic = prev.filter(
+            (p) => !onChainKeys.has(p.positionPubkey) && p.positionPubkey?.startsWith('pos-')
+          );
+          return [...data.positions, ...pendingOptimistic];
+        });
       } else {
         setPositions([]);
       }
@@ -282,7 +289,12 @@ export default function AppPage() {
 
   useEffect(() => {
     fetchPositions();
-  }, [fetchPositions]);
+    if (!isRealWalletConnected) return;
+    const interval = setInterval(() => {
+      fetchPositions();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [fetchPositions, isRealWalletConnected]);
 
   const displayedPositions = isRealWalletConnected
     ? positions
@@ -441,17 +453,46 @@ export default function AppPage() {
         showToast(`✓ Deposited ${depositAmount} ${depositAsset} into on-chain Aegis vault!`, 'ok');
       }
 
+      // Optimistically insert new guarded position so it reflects instantly on UI
+      const newPosPubkey = data.positionPubkey || `pos-${Date.now()}`;
+      const optimisticPos: GuardedPosition = {
+        symbol: depositAsset,
+        name: depositAsset === 'SPYX' ? 'S&P 500 Tokenized' : depositAsset === 'GLDX' ? 'Physical Gold Tokenized' : depositAsset === 'QQQX' ? 'Nasdaq 100 Tokenized' : `${depositAsset} Tokenized`,
+        mint: mint,
+        positionPubkey: newPosPubkey,
+        balance: numAmount,
+        priceUsd: DEFAULT_PRICES[depositAsset] || 100.0,
+        multiplier: 1.0,
+        policy: {
+          drawdownBps: parsedPolicy?.drawdownThresholdBps || 800,
+          exitBps: parsedPolicy?.exitPercentBps || 7500,
+          target: parsedPolicy?.targetAsset || 'USDC',
+          mode: parsedPolicy?.mode || 'Normal',
+        },
+        headroomPct: +((parsedPolicy?.drawdownThresholdBps || 800) / 100).toFixed(1),
+        status: 'protected',
+        index: positions.length,
+      };
+
+      setPositions((prev) => {
+        if (prev.some((p) => p.positionPubkey === newPosPubkey)) return prev;
+        return [optimisticPos, ...prev];
+      });
+
       setDepositAmount('');
-      await new Promise((r) => setTimeout(r, 400));
-      await fetchPositions();
       setTab('overview');
+
+      // Schedule fast sequential syncs to pull confirmed on-chain data
+      setTimeout(() => fetchPositions(), 500);
+      setTimeout(() => fetchPositions(), 2000);
+      setTimeout(() => fetchPositions(), 4000);
     } catch (e: any) {
       console.error('Deposit error:', e);
       showToast(e.message || 'Deposit failed', 'err');
     } finally {
       setIsDepositing(false);
     }
-  }, [depositMint, depositAsset, depositAmount, currentWalletBalance, demoMode, isRealWalletConnected, activeAddress, slippageTolerance, parsedPolicy, publicKey, sendTransaction, connection, fetchPositions, demoPositions.length]);
+  }, [depositMint, depositAsset, depositAmount, currentWalletBalance, demoMode, isRealWalletConnected, activeAddress, slippageTolerance, parsedPolicy, publicKey, sendTransaction, connection, fetchPositions, demoPositions.length, positions.length]);
 
   const handleWithdraw = useCallback(async (positionPubkey: string, symbol: string) => {
     setIsWithdrawing(positionPubkey || symbol);
