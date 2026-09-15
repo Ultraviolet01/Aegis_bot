@@ -1,19 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import type { ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 
 // Lazy-load the candlestick chart (client-only)
 const CandlestickChart = dynamic(() => import('../../components/CandlestickChart'), {
   ssr: false,
-  loading: () => (
-    <div style={{
-      height: 440, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      color: '#64748b', fontFamily: 'var(--mono)', fontSize: 11,
-    }}>
-      Loading interactive chart…
-    </div>
-  ),
 });
 
 // ─── Token Registry ───────────────────────────────────────────────────────────
@@ -310,6 +303,10 @@ function formatDate(ts: number) {
   return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+function formatIsoDate(ts: number) {
+  return new Date(ts * 1000).toISOString();
+}
+
 function actionLabel(action: CorporateAction) {
   const suffix = action.needsReview ? ' (unconfirmed — please verify)' : '';
   if (action.actionType === 'split') {
@@ -321,6 +318,144 @@ function actionLabel(action: CorporateAction) {
     return `${ratio}-for-1 Reverse Split${suffix}`;
   }
   return `Dividend${suffix}`;
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const tokens = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  const parts = text.split(tokens);
+
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('*') && part.endsWith('*')) {
+      return <em key={index}>{part.slice(1, -1)}</em>;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={index}>{part.slice(1, -1)}</code>;
+    }
+    return <span key={index}>{part}</span>;
+  });
+}
+
+function renderAnswerMarkdown(markdown: string): ReactNode {
+  const lines = markdown.split(/\r?\n/);
+  const blocks: ReactNode[] = [];
+  let listItems: { ordered: boolean; text: string }[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    const ordered = listItems[0]!.ordered;
+    const List = ordered ? 'ol' : 'ul';
+    blocks.push(
+      <List key={`list-${blocks.length}`}>
+        {listItems.map((item, index) => <li key={index}>{renderInlineMarkdown(item.text)}</li>)}
+      </List>
+    );
+    listItems = [];
+  };
+
+  lines.forEach((line, index) => {
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (bullet || numbered) {
+      const ordered = Boolean(numbered);
+      if (listItems.length > 0 && listItems[0]!.ordered !== ordered) flushList();
+      listItems.push({ ordered, text: (bullet ?? numbered)![1] ?? '' });
+      return;
+    }
+
+    flushList();
+    if (!line.trim()) {
+      blocks.push(<div key={`space-${index}`} style={{ height: 8 }} />);
+      return;
+    }
+    blocks.push(<p key={`paragraph-${index}`}>{renderInlineMarkdown(line)}</p>);
+  });
+
+  flushList();
+  return blocks;
+}
+
+function asUnixSeconds(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 10_000_000_000 ? Math.floor(value / 1000) : Math.floor(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return asUnixSeconds(numeric);
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return Math.floor(parsed / 1000);
+  }
+  return null;
+}
+
+function numericValue(...values: unknown[]): number | null {
+  for (const value of values) {
+    const number = typeof value === 'number' ? value : Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function responseNodes(data: any): any[] {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.nodes)) return data.nodes;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.prices)) return data.prices;
+  if (Array.isArray(data?.history)) return data.history;
+  return data && typeof data === 'object' ? [data] : [];
+}
+
+function parseOfficialPriceHistory(data: any, multiplier: number): OracleDataPoint[] {
+  return responseNodes(data)
+    .map((point) => {
+      const timestamp = asUnixSeconds(point.timestamp ?? point.time ?? point.date ?? point.datetime);
+      const price = numericValue(point.priceUsd, point.price, point.quote, point.close, point.value);
+      if (timestamp === null || price === null || price <= 0) return null;
+      const pointMultiplier = numericValue(point.multiplier) ?? multiplier;
+      return {
+        timestamp,
+        priceUsd: price,
+        multiplier: pointMultiplier,
+        normalizedPrice: price * pointMultiplier,
+      };
+    })
+    .filter((point): point is OracleDataPoint => point !== null)
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function parseOfficialCorporateActions(data: any, mint: string): CorporateAction[] {
+  const parsed: Array<CorporateAction | null> = responseNodes(data).map((event): CorporateAction | null => {
+      const newMultiplier = numericValue(event.multiplier, event.newMultiplier);
+      const oldMultiplier = numericValue(event.previousMultiplier, event.oldMultiplier);
+      const activationTime = asUnixSeconds(event.activationDateTime ?? event.activationTime ?? event.exDate);
+      if (newMultiplier === null || oldMultiplier === null || activationTime === null || oldMultiplier <= 0) return null;
+      const pctChange = Math.abs((newMultiplier - oldMultiplier) / oldMultiplier);
+      const reason = String(event.reason ?? '').toLowerCase();
+      const actionType: CorporateAction['actionType'] = reason.includes('reverse')
+        ? 'reverse_split'
+        : reason.includes('split')
+          ? 'split'
+          : newMultiplier < oldMultiplier && pctChange >= 0.05
+            ? 'reverse_split'
+            : pctChange >= 0.05
+              ? 'split'
+              : 'dividend';
+      return {
+        mint,
+        symbol: 'SPYX',
+        actionType,
+        newMultiplier,
+        oldMultiplier,
+        exDate: new Date(activationTime * 1000).toISOString().split('T')[0] ?? '',
+        activationTime,
+        applied: Date.now() / 1000 >= activationTime,
+        needsReview: pctChange >= 0.03 && pctChange <= 0.07,
+        isDemo: false,
+      };
+  });
+  return parsed.filter((event) => event !== null).sort((a, b) => a.activationTime - b.activationTime);
 }
 
 /**
@@ -517,6 +652,29 @@ export default function HistoryPage() {
     setLoading(true);
     setError(null);
     try {
+      // SPYX uses the official public v2 endpoints. The token only launched
+      // in 2025, so this feed intentionally represents token history, not a
+      // fabricated three-year SPYX series.
+      if (ticker === 'SPYX') {
+        const apiSymbol = 'SPYX';
+        const [priceRes, multiplierRes] = await Promise.all([
+          fetch(`/api/xstocks/public/assets/${apiSymbol}/price-data`),
+          fetch(`/api/xstocks/public/assets/${apiSymbol}/multiplier/history?network=Solana&page=1&pageSize=100`),
+        ]);
+        if (!priceRes.ok) throw new Error(`SPYX price history unavailable (HTTP ${priceRes.status})`);
+
+        const priceData = await priceRes.json();
+        const multiplierData = multiplierRes.ok ? await multiplierRes.json() : [];
+        const multiplierEvents = parseOfficialCorporateActions(multiplierData, activeStock.mint);
+        const currentMultiplier = multiplierEvents.at(-1)?.newMultiplier ?? activeStock.multiplier;
+        const officialHistory = parseOfficialPriceHistory(priceData, currentMultiplier);
+        if (officialHistory.length === 0) throw new Error('Official SPYX price history returned no usable points');
+
+        setPriceHistory(officialHistory);
+        setCorporateActions(multiplierEvents);
+        return;
+      }
+
       // 1. First query on-chain token info & live Jupiter price
       try {
         const tokenInfoRes = await fetch(`/api/token-info?mint=${activeStock.mint}`);
@@ -585,13 +743,24 @@ export default function HistoryPage() {
     const latestPrice = prices[prices.length - 1] ?? 0;
     const maxPrice = Math.max(...prices);
     const minPrice = Math.min(...prices);
+    const maxPricePoint = priceHistory[prices.indexOf(maxPrice)];
+    const minPricePoint = priceHistory[prices.indexOf(minPrice)];
 
     let maxDrawdown = 0;
     let peak = prices[0] ?? 0;
-    for (const p of prices) {
+    let peakPoint = priceHistory[0];
+    let maxDrawdownPeak = priceHistory[0];
+    let maxDrawdownTrough = priceHistory[0];
+    for (let index = 0; index < prices.length; index++) {
+      const p = prices[index]!;
       if (p > peak) peak = p;
+      if (p >= peak) peakPoint = priceHistory[index];
       const dd = peak > 0 ? (peak - p) / peak : 0;
-      if (dd > maxDrawdown) maxDrawdown = dd;
+      if (dd > maxDrawdown) {
+        maxDrawdown = dd;
+        maxDrawdownPeak = peakPoint;
+        maxDrawdownTrough = priceHistory[index];
+      }
     }
 
     return {
@@ -599,7 +768,19 @@ export default function HistoryPage() {
       latestPrice,
       maxPrice,
       minPrice,
+      startDate: formatDate(priceHistory[0]?.timestamp ?? 0),
+      endDate: formatDate(priceHistory[priceHistory.length - 1]?.timestamp ?? 0),
+      maxPriceDate: maxPricePoint ? formatDate(maxPricePoint.timestamp) : undefined,
+      minPriceDate: minPricePoint ? formatDate(minPricePoint.timestamp) : undefined,
       maxDrawdownPct: (maxDrawdown * 100).toFixed(1),
+      maxDrawdownPeak: maxDrawdownPeak ? {
+        timestamp: maxDrawdownPeak.timestamp,
+        price: maxDrawdownPeak.normalizedPrice,
+      } : undefined,
+      maxDrawdownTrough: maxDrawdownTrough ? {
+        timestamp: maxDrawdownTrough.timestamp,
+        price: maxDrawdownTrough.normalizedPrice,
+      } : undefined,
     };
   }, [priceHistory]);
 
@@ -702,10 +883,17 @@ export default function HistoryPage() {
         stats && `Entry price: ${formatPrice(stats.entryPrice)}`,
         stats && `Max price: ${formatPrice(stats.maxPrice)}`,
         stats && `Min price: ${formatPrice(stats.minPrice)}`,
+        stats && `Coverage: ${stats.startDate} through ${stats.endDate}`,
+        stats && `High: ${formatPrice(stats.maxPrice)} on ${stats.maxPriceDate}`,
+        stats && `Low: ${formatPrice(stats.minPrice)} on ${stats.minPriceDate}`,
         stats && `Max drawdown: ${stats.maxDrawdownPct}%`,
+        stats?.maxDrawdownPeak && `Max drawdown peak: ${formatIsoDate(stats.maxDrawdownPeak.timestamp)} at ${formatPrice(stats.maxDrawdownPeak.price)}`,
+        stats?.maxDrawdownTrough && `Max drawdown trough: ${formatIsoDate(stats.maxDrawdownTrough.timestamp)} at ${formatPrice(stats.maxDrawdownTrough.price)}`,
+        'Daily normalized price history:',
+        ...priceHistory.map((point) => `${formatDate(point.timestamp)}: ${formatPrice(point.normalizedPrice)}`),
         corporateActions.length > 0 &&
           `Corporate actions: ${corporateActions
-            .map((a) => `${formatDate(a.activationTime)} ${actionLabel(a)}`)
+            .map((a) => `${formatIsoDate(a.activationTime)} ${actionLabel(a)} (${a.oldMultiplier}x -> ${a.newMultiplier}x)`)
             .join(', ')}`,
       ]
         .filter(Boolean)
@@ -825,7 +1013,38 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      <div style={{ padding: '36px 40px', maxWidth: 1360, margin: '0 auto' }}>
+        <div style={{ padding: '36px 40px', maxWidth: 1360, margin: '0 auto' }}>
+        <div style={{ marginBottom: 18 }}>
+          <a
+            href="/app"
+            id="history-back-to-overview"
+            onClick={(event) => {
+              const wallet = new URLSearchParams(window.location.search).get('wallet');
+              if (wallet) {
+                event.preventDefault();
+                window.location.href = `/app?wallet=${encodeURIComponent(wallet)}`;
+              }
+            }}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 7,
+              padding: '8px 12px',
+              border: '1px solid rgba(79, 224, 168, 0.25)',
+              borderRadius: 7,
+              color: '#4fe0a8',
+              background: 'rgba(79, 224, 168, 0.06)',
+              fontFamily: 'var(--mono)',
+              fontSize: 11,
+              textDecoration: 'none',
+              letterSpacing: '.02em',
+            }}
+          >
+            <span aria-hidden="true">←</span>
+            Back to Overview
+          </a>
+        </div>
+
         {/* ── Status Notice ── */}
         {error && (
           <div
@@ -1212,28 +1431,9 @@ export default function HistoryPage() {
                         </div>
                       </div>
 
-                      <div style={{ textAlign: 'right' }}>
-                        <div
-                          style={{
-                            fontFamily: 'var(--mono)',
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: 'var(--white)',
-                          }}
-                        >
-                          {formatPrice(s.basePrice)}
-                        </div>
-                        <div
-                          style={{
-                            fontFamily: 'var(--mono)',
-                            fontSize: 10,
-                            color: s.dailyChangePct >= 0 ? '#10b981' : '#f43f5e',
-                          }}
-                        >
-                          {s.dailyChangePct >= 0 ? '+' : ''}
-                          {s.dailyChangePct.toFixed(2)}%
-                        </div>
-                      </div>
+                      {isSelected && (
+                        <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: '#4fe0a8' }}>✓</div>
+                      )}
                     </div>
                   );
                 })}
@@ -1328,7 +1528,7 @@ export default function HistoryPage() {
           </div>
         )}
 
-        {/* ── UNIFIED COMMAND BAR: QUERY & BACKTEST HISTORY ── */}
+        {/* ── ASK QUESTIONS: QUERY HISTORY ── */}
         <div
           id="query-history-section"
           style={{
@@ -1348,20 +1548,15 @@ export default function HistoryPage() {
                 marginBottom: 6,
               }}
             >
-              Ask Questions & Backtest Policies
-            </div>
-            <div style={{ color: '#94a3b8', fontSize: 13.5, lineHeight: 1.6 }}>
-              Query {ticker} price movements, inspect corporate actions, or backtest custom downside risk rules against historical candles.
+              Ask Questions
             </div>
           </div>
 
           {/* Quick Preset Prompts */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
             {[
-              `Backtest: If ${ticker} drops >8% exit 75% to USDC`,
               `What was the peak-to-trough maximum drawdown?`,
               `How did dividends affect the multiplier?`,
-              `Backtest: If ${ticker} falls >5% exit 50% cautiously`,
             ].map((preset) => (
               <button
                 key={preset}
@@ -1402,7 +1597,7 @@ export default function HistoryPage() {
               value={queryInput}
               onChange={(e) => setQueryInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleUnifiedQuery()}
-              placeholder={`Ask anything about ${ticker} or backtest a policy (e.g. "If ${ticker} drops >8% exit 75%" or "What was max drawdown?")...`}
+              placeholder={`Ask anything about ${ticker} (e.g. "What was max drawdown?" or "How did dividends affect the multiplier?")...`}
               style={{
                 flex: 1,
                 background: 'transparent',
@@ -1569,7 +1764,7 @@ export default function HistoryPage() {
                       color: '#94a3b8',
                     }}
                   >
-                    {item.answer}
+                    {renderAnswerMarkdown(item.answer)}
                   </div>
                 </div>
               ))}

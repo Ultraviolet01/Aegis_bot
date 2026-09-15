@@ -329,6 +329,15 @@ h1 em{font-style:normal;color:#245e4b}
 .btn-primary:hover{opacity:.88;transform:translateY(-1px)}
 .btn-primary:disabled{opacity:.4;cursor:not-allowed;transform:none}
 .btn-primary-full{display:inline-flex;align-items:center;justify-content:center;width:auto;max-width:100%;margin:18px auto 0;padding:12px 28px;font-size:14px;border-radius:999px;text-align:center}
+/* Secondary action: same pill and type scale as .btn-primary, carried by border
+   instead of fill. Used on the dark dashboard panels, so the mint reads at full
+   strength and the hover step is background rather than opacity — a filled pill
+   fading is fine, an outlined one fading reads as disabled. */
+.btn-ghost{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 18px;border-radius:99px;border:1px solid rgba(79,224,168,.35);background:rgba(79,224,168,.07);color:var(--mint);font:700 13px var(--mono);cursor:pointer;transition:background .15s,border-color .15s,transform .15s}
+.btn-ghost:hover{background:rgba(79,224,168,.14);border-color:rgba(79,224,168,.55)}
+.btn-ghost:active{transform:translateY(1px)}
+.btn-ghost:focus-visible{outline:2px solid rgba(79,224,168,.7);outline-offset:2px}
+.btn-ghost:disabled{opacity:.4;cursor:not-allowed;transform:none}
 .spinner{display:inline-block;width:12px;height:12px;border:2px solid rgba(0,0,0,.2);border-top-color:currentColor;border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .mono{font-family:var(--mono)}

@@ -23,9 +23,14 @@ export interface ParsedPolicy {
   drawdownThresholdBps: number;
   oracleDeviationThresholdBps: number;
   exitPercentBps: number;
+  maxSlippageBps: number;
   targetAsset: 'USDC' | 'SOL' | 'USDT';
   mode: PolicyMode;
   warnings: string[];
+  /** Fields the sentence never stated, where a default was applied. */
+  defaultedFields: PolicyFieldKey[];
+  /** Fields the sentence stated but that exceeded the program envelope. */
+  clampedFields: PolicyFieldKey[];
   source?: PolicySource;
   model?: string;
 }
@@ -47,17 +52,29 @@ export async function parsePolicyLlm(input: string): Promise<ParsedPolicy> {
 
     const data = await res.json();
     if (data.policy) {
-      const llmWarnings: string[] = [];
-      if (data.policy.oracleDeviationThresholdBps === 200 && !input.toLowerCase().includes('deviat')) {
-        // Safe default applied for unspecified oracle deviation
-      }
+      // The route tells us which numbers the model inferred rather than read.
+      // Carry that through instead of dropping it: a default presented as an
+      // extraction is the one failure mode this preview must not have.
+      const defaultedFields: PolicyFieldKey[] = Array.isArray(data.policy.defaultedFields)
+        ? data.policy.defaultedFields
+        : [];
+      const clampedFields: PolicyFieldKey[] = Array.isArray(data.policy.clampedFields)
+        ? data.policy.clampedFields
+        : [];
+      const warnings: string[] = Array.isArray(data.policy.warnings)
+        ? data.policy.warnings
+        : buildFieldWarnings({ defaultedFields, clampedFields });
+
       return {
         drawdownThresholdBps: data.policy.drawdownThresholdBps,
         oracleDeviationThresholdBps: data.policy.oracleDeviationThresholdBps,
         exitPercentBps: data.policy.exitPercentBps,
+        maxSlippageBps: data.policy.maxSlippageBps ?? fallback.maxSlippageBps,
         targetAsset: data.policy.targetAsset || fallback.targetAsset,
         mode: data.policy.mode as PolicyMode,
-        warnings: llmWarnings,
+        warnings,
+        defaultedFields,
+        clampedFields,
         source: 'llm',
         model: data.model || 'claude-haiku-4-5',
       };
@@ -69,9 +86,112 @@ export async function parsePolicyLlm(input: string): Promise<ParsedPolicy> {
   return fallback;
 }
 
-const MAX_BPS = 10_000;
-const MIN_DRAWDOWN_BPS = 100; // 1%
-const MIN_DEVIATION_BPS = 10; // 0.1%
+/* ==========================================================================
+   Program-aligned limits
+   --------------------------------------------------------------------------
+   These are the bounds a parsed policy is allowed to reach. They are exported
+   so the API route enforces exactly the same envelope as this parser — a
+   model-proposed number must never be trusted with more latitude than the
+   regex path, and neither may exceed what a policy field can legally hold.
+   ========================================================================== */
+
+export const MAX_POLICY_BPS = 10_000; // 100% — no field may exceed this
+export const MIN_DRAWDOWN_BPS = 100; // 1%
+export const MIN_DEVIATION_BPS = 10; // 0.1%
+export const MIN_SLIPPAGE_BPS = 1; // 0.01%
+export const MAX_SLIPPAGE_BPS = 500; // 5% — matches the on-chain policy ceiling
+
+export const DEFAULT_DRAWDOWN_BPS = 800; // 8%
+export const DEFAULT_DEVIATION_BPS = 200; // 2%
+export const DEFAULT_EXIT_BPS = 5_000; // 50%
+export const DEFAULT_SLIPPAGE_BPS = 50; // 0.5%
+
+/**
+ * Property names as they appear in an API policy payload. Used to report which
+ * fields were defaulted or clamped, so the UI can badge individual numbers
+ * rather than printing an untethered list of warnings.
+ */
+export type PolicyFieldKey =
+  | 'drawdownThresholdBps'
+  | 'oracleDeviationThresholdBps'
+  | 'exitPercentBps'
+  | 'maxSlippageBps'
+  | 'targetAsset';
+
+/** Result of forcing a field into the program-aligned envelope. */
+export interface BoundedField {
+  value: number;
+  defaulted: boolean;
+  clamped: boolean;
+}
+
+const FIELD_LABELS: Record<PolicyFieldKey, string> = {
+  drawdownThresholdBps: 'Drawdown threshold',
+  oracleDeviationThresholdBps: 'Oracle deviation',
+  exitPercentBps: 'Exit size',
+  maxSlippageBps: 'Max slippage',
+  targetAsset: 'Target asset',
+};
+
+const FIELD_DEFAULTS: Record<PolicyFieldKey, string> = {
+  drawdownThresholdBps: `${DEFAULT_DRAWDOWN_BPS / 100}%`,
+  oracleDeviationThresholdBps: `${DEFAULT_DEVIATION_BPS / 100}%`,
+  exitPercentBps: `${DEFAULT_EXIT_BPS / 100}%`,
+  maxSlippageBps: `${DEFAULT_SLIPPAGE_BPS / 100}%`,
+  targetAsset: 'USDC',
+};
+
+/**
+ * Turn defaulted/clamped field keys into sentences a person can act on.
+ *
+ * `values` carries what was actually applied, so a warning can never quote a
+ * number the policy does not contain — conservative mode, for instance, applies
+ * 30 bps slippage where the documented default is 50, and the message must say
+ * the former. Without it the documented default is named instead.
+ */
+export function buildFieldWarnings(input: {
+  defaultedFields: PolicyFieldKey[];
+  clampedFields: PolicyFieldKey[];
+  values?: Partial<Record<PolicyFieldKey, number | string>>;
+}): string[] {
+  const applied = (field: PolicyFieldKey): string => {
+    const value = input.values?.[field];
+    if (typeof value === 'number') return `${value / 100}%`;
+    if (typeof value === 'string') return value;
+    return FIELD_DEFAULTS[field];
+  };
+
+  return [
+    ...input.defaultedFields.map(
+      (field) => `${FIELD_LABELS[field]} not found in your sentence — defaulted to ${applied(field)}.`,
+    ),
+    ...input.clampedFields.map(
+      (field) => `${FIELD_LABELS[field]} exceeded the allowed range — clamped to ${applied(field)}.`,
+    ),
+  ];
+}
+
+/**
+ * Tensions the parsed numbers contain but the sentence did not intend.
+ *
+ * A conservative policy tightens slippage, which is the right instinct — but a
+ * large exit under a tight slippage ceiling is precisely the combination that
+ * fails to fill in a fast drop. The guard would be protecting the position from
+ * its own exit, so we say so rather than letting the user discover it live.
+ */
+export function policyAdvisories(policy: {
+  mode: PolicyMode;
+  exitPercentBps: number;
+  maxSlippageBps: number;
+}): string[] {
+  const advisories: string[] = [];
+  if (policy.mode === 'Conservative' && policy.exitPercentBps >= 5_000) {
+    advisories.push(
+      `Conservative slippage (${policy.maxSlippageBps / 100}%) with a ${policy.exitPercentBps / 100}% exit: the swap may not fill in a fast drop, leaving the position unguarded.`,
+    );
+  }
+  return advisories;
+}
 
 const DRAWDOWN_PATTERNS: RegExp[] = [
   /([0-9]+(?:\.[0-9]+)?)\s*%[^0-9%]{0,20}draw\s?down/,
@@ -110,9 +230,53 @@ function firstPercent(text: string, patterns: RegExp[]): number | undefined {
   return undefined;
 }
 
+/**
+ * Force a single basis-point field into the program-aligned envelope.
+ *
+ * A value the sentence never supplied is *defaulted*; a value the sentence did
+ * supply but that sits outside the envelope is *clamped*. The two are reported
+ * separately because they mean different things to the person signing: one is a
+ * gap the model filled in, the other is a limit their own wording exceeded.
+ */
+export function boundBps(
+  raw: number,
+  options: { min: number; fallback: number },
+): BoundedField {
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return { value: options.fallback, defaulted: true, clamped: false };
+  }
+  if (raw < options.min) {
+    return { value: options.min, defaulted: false, clamped: true };
+  }
+  if (raw > MAX_POLICY_BPS) {
+    return { value: MAX_POLICY_BPS, defaulted: false, clamped: true };
+  }
+  return { value: raw, defaulted: false, clamped: false };
+}
+
+/**
+ * Fields whose absence from a sentence is provable without a model.
+ *
+ * A percentage can only convey drawdown, deviation or exit size, so those are
+ * left to the model: "halve the position" states an exit the regexes will never
+ * find, and claiming it was defaulted would be a fresh lie in the other
+ * direction. Slippage and target asset are different — slippage is only ever
+ * stated by naming it, and an asset is only ever stated by naming it — so their
+ * silence is a fact we can check and use to catch a model that under-reports
+ * what it filled in.
+ */
+export function textDerivedDefaultedFields(input: string): PolicyFieldKey[] {
+  const text = input.toLowerCase();
+  const fields: PolicyFieldKey[] = [];
+  if (!/\bslippage\b/i.test(text)) fields.push('maxSlippageBps');
+  if (!/\b(?:usdc|usdt|sol|wsol)\b/i.test(text)) fields.push('targetAsset');
+  return fields;
+}
+
 export function parsePolicy(input: string): ParsedPolicy {
   const text = input.toLowerCase();
-  const warnings: string[] = [];
+  const defaulted = new Set<PolicyFieldKey>();
+  const clamped = new Set<PolicyFieldKey>();
 
   const drawdown = firstPercent(text, DRAWDOWN_PATTERNS);
   const deviation = firstPercent(text, DEVIATION_PATTERNS);
@@ -122,38 +286,27 @@ export function parsePolicy(input: string): ParsedPolicy {
   if (CONSERVATIVE_PATTERN.test(text)) mode = 'Conservative';
   else if (AGGRESSIVE_PATTERN.test(text)) mode = 'Aggressive';
 
-  let drawdownBps = drawdown === undefined ? 800 : percentToBps(drawdown);
-  let deviationBps = deviation === undefined ? 200 : percentToBps(deviation);
-  let exitBps = exit === undefined ? 5000 : percentToBps(exit);
+  const drawdownBps = boundBps(drawdown === undefined ? 0 : percentToBps(drawdown), {
+    min: MIN_DRAWDOWN_BPS,
+    fallback: DEFAULT_DRAWDOWN_BPS,
+  });
+  const deviationBps = boundBps(deviation === undefined ? 0 : percentToBps(deviation), {
+    min: MIN_DEVIATION_BPS,
+    fallback: DEFAULT_DEVIATION_BPS,
+  });
+  const exitBps = boundBps(exit === undefined ? 0 : percentToBps(exit), {
+    min: 1,
+    fallback: DEFAULT_EXIT_BPS,
+  });
 
-  if (drawdown === undefined) warnings.push('No drawdown threshold found — defaulted to 8%.');
-  if (deviation === undefined) warnings.push('No oracle deviation found — defaulted to 2%.');
-  if (exit === undefined) warnings.push('No exit size found — defaulted to 50%.');
+  if (drawdownBps.defaulted) defaulted.add('drawdownThresholdBps');
+  else if (drawdownBps.clamped) clamped.add('drawdownThresholdBps');
 
-  if (drawdownBps < MIN_DRAWDOWN_BPS) {
-    warnings.push(`Drawdown below the 1% minimum — raised to 1%.`);
-    drawdownBps = MIN_DRAWDOWN_BPS;
-  }
-  if (deviationBps < MIN_DEVIATION_BPS) {
-    warnings.push(`Deviation below the 0.1% minimum — raised to 0.1%.`);
-    deviationBps = MIN_DEVIATION_BPS;
-  }
-  if (drawdownBps > MAX_BPS) {
-    warnings.push('Drawdown above 100% — capped.');
-    drawdownBps = MAX_BPS;
-  }
-  if (deviationBps > MAX_BPS) {
-    warnings.push('Deviation above 100% — capped.');
-    deviationBps = MAX_BPS;
-  }
-  if (exitBps > MAX_BPS) {
-    warnings.push('Exit size above 100% — capped.');
-    exitBps = MAX_BPS;
-  }
-  if (exitBps <= 0) {
-    warnings.push('Exit size must be positive — defaulted to 50%.');
-    exitBps = 5000;
-  }
+  if (deviationBps.defaulted) defaulted.add('oracleDeviationThresholdBps');
+  else if (deviationBps.clamped) clamped.add('oracleDeviationThresholdBps');
+
+  if (exitBps.defaulted) defaulted.add('exitPercentBps');
+  else if (exitBps.clamped) clamped.add('exitPercentBps');
 
   let targetAsset: 'USDC' | 'SOL' | 'USDT' = 'USDC';
   if (/\b(?:to|into|in)\s+(?:sol|wsol)\b/i.test(text) || (/\bsol\b/i.test(text) && !/\busdc\b/i.test(text) && !/\busdt\b/i.test(text))) {
@@ -161,14 +314,40 @@ export function parsePolicy(input: string): ParsedPolicy {
   } else if (/\b(?:to|into|in)\s+usdt\b/i.test(text) || /\busdt\b/i.test(text)) {
     targetAsset = 'USDT';
   }
+  if (targetAsset === 'USDC' && !/\busdc\b/i.test(text)) {
+    defaulted.add('targetAsset');
+  }
+
+  const maxSlippageBps = mode === 'Conservative' ? 30 : mode === 'Aggressive' ? 100 : DEFAULT_SLIPPAGE_BPS;
+  if (!/\bslippage\b/i.test(text)) {
+    defaulted.add('maxSlippageBps');
+  }
+
+  const defaultedFields = [...defaulted];
+  const clampedFields = [...clamped];
 
   return {
-    drawdownThresholdBps: drawdownBps,
-    oracleDeviationThresholdBps: deviationBps,
-    exitPercentBps: exitBps,
+    drawdownThresholdBps: drawdownBps.value,
+    oracleDeviationThresholdBps: deviationBps.value,
+    exitPercentBps: exitBps.value,
+    maxSlippageBps,
     targetAsset,
     mode,
-    warnings,
+    // Derived from the same sets the caller badges on, so a field can never be
+    // flagged in one place and silently unexplained in the other.
+    warnings: buildFieldWarnings({
+      defaultedFields,
+      clampedFields,
+      values: {
+        drawdownThresholdBps: drawdownBps.value,
+        oracleDeviationThresholdBps: deviationBps.value,
+        exitPercentBps: exitBps.value,
+        maxSlippageBps,
+        targetAsset,
+      },
+    }),
+    defaultedFields,
+    clampedFields,
     source: 'deterministic',
   };
 }

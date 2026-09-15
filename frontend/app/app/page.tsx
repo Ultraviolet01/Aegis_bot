@@ -4,9 +4,16 @@ import { useState, useCallback, useId, useEffect } from 'react';
 import Link from 'next/link';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { Transaction } from '@solana/web3.js';
+import { PublicKey, Transaction } from '@solana/web3.js';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
+
+type PolicyFieldKey =
+  | 'drawdownThresholdBps'
+  | 'oracleDeviationThresholdBps'
+  | 'exitPercentBps'
+  | 'maxSlippageBps'
+  | 'targetAsset';
 
 interface ParsedPolicy {
   drawdownThresholdBps: number;
@@ -17,6 +24,18 @@ interface ParsedPolicy {
   mode: 'Conservative' | 'Balanced' | 'Aggressive';
   interpretation: string;
   confidence: number;
+  /** Fields the sentence never stated, where a default was applied. */
+  defaultedFields?: PolicyFieldKey[];
+  /** Fields the sentence stated but that exceeded the program envelope. */
+  clampedFields?: PolicyFieldKey[];
+  /** Plain-English notes for the defaulted and clamped fields. */
+  warnings?: string[];
+  /** Tensions inside the numbers themselves, e.g. a tight slippage cap on a large exit. */
+  advisories?: string[];
+  source?: 'llm' | 'deterministic';
+  model?: string;
+  /** Why the deterministic parser answered, when it did. */
+  llmSkipReason?: string;
 }
 
 type Tab = 'overview' | 'positions' | 'policies' | 'history';
@@ -26,7 +45,8 @@ interface GuardedPosition {
   name: string;
   mint: string;
   balance: number;
-  priceUsd: number;
+  /** null when the mint has no price feed — the row shows no USD figure rather than a guess. */
+  priceUsd: number | null;
   multiplier: number;
   policy: {
     drawdownBps: number;
@@ -95,6 +115,26 @@ const DEFAULT_PRICES: Record<string, number> = {
   TSLAX: 245.80,
 };
 
+/**
+ * A mint the user pasted, resolved through /api/token-info.
+ *
+ * Kept separate from `depositAsset`/`depositMint` because the resolver also
+ * carries what the deposit path needs to *warn* about the token — whether it is
+ * a verified xStock, and a live price so an optimistic position is not valued at
+ * a placeholder.
+ */
+interface ResolvedToken {
+  mint: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  isToken2022: boolean;
+  isVerifiedXStock: boolean;
+  authenticityLabel: string;
+  priceUsd: number | null;
+  multiplier: number;
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function bps(n: number) { return (n / 100).toFixed(2) + '%'; }
@@ -132,12 +172,16 @@ function NetworkPill({ label, live = false }: { label: string; live?: boolean })
 }
 
 function PolicyPreviewCard({ policy }: { policy: ParsedPolicy }) {
-  const params = [
-    { label: 'Drawdown Trigger', value: bps(policy.drawdownThresholdBps), note: 'Breach limit' },
-    { label: 'Multi-Pool Divergence Guard', value: bps(policy.oracleDeviationThresholdBps), note: 'Oracle sanity check' },
-    { label: 'Exit Ratio per Event', value: bps(policy.exitPercentBps), note: 'Controlled liquidation' },
-    { label: 'Max Swap Slippage', value: bps(policy.maxSlippageBps), note: 'DEX constraint' },
-    { label: 'Target Safe Asset', value: policy.targetAsset ?? 'USDC', note: 'Owner token account' },
+  const defaulted = new Set(policy.defaultedFields ?? []);
+  const clamped = new Set(policy.clampedFields ?? []);
+  const sourceLabel = policy.source === 'llm' ? `Claude · ${policy.model ?? 'llm'}` : 'Regex parser';
+
+  const params: { key: PolicyFieldKey; label: string; value: string; note: string }[] = [
+    { key: 'drawdownThresholdBps', label: 'Drawdown Trigger', value: bps(policy.drawdownThresholdBps), note: 'Breach limit' },
+    { key: 'oracleDeviationThresholdBps', label: 'Multi-Pool Divergence Guard', value: bps(policy.oracleDeviationThresholdBps), note: 'Oracle sanity check' },
+    { key: 'exitPercentBps', label: 'Exit Ratio per Event', value: bps(policy.exitPercentBps), note: 'Controlled liquidation' },
+    { key: 'maxSlippageBps', label: 'Max Swap Slippage', value: bps(policy.maxSlippageBps), note: 'DEX constraint' },
+    { key: 'targetAsset', label: 'Target Safe Asset', value: policy.targetAsset ?? 'USDC', note: 'Owner token account' },
   ];
 
   return (
@@ -160,38 +204,58 @@ function PolicyPreviewCard({ policy }: { policy: ParsedPolicy }) {
           display: 'flex', alignItems: 'center', gap: 6,
         }}>
           <LiveDot />
-          Parsed Parameters — Verified Invariants
+          Parsed Parameters — Review Before Signing
         </div>
-        <span style={{
-          fontFamily: 'var(--mono)', fontSize: 10, padding: '2px 8px', borderRadius: 4,
-          background: 'rgba(79, 224, 168, 0.1)', color: '#4fe0a8', border: '1px solid rgba(79, 224, 168, 0.25)',
-        }}>
-          {policy.mode} Mode
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            fontFamily: 'var(--mono)', fontSize: 10, padding: '2px 8px', borderRadius: 4,
+            background: policy.source === 'llm' ? 'rgba(79, 224, 168, 0.1)' : 'rgba(212, 170, 70, 0.1)',
+            color: policy.source === 'llm' ? '#4fe0a8' : '#d4aa46',
+            border: `1px solid ${policy.source === 'llm' ? 'rgba(79, 224, 168, 0.25)' : 'rgba(212, 170, 70, 0.3)'}`,
+          }}>
+            {sourceLabel}
+          </span>
+          <span style={{
+            fontFamily: 'var(--mono)', fontSize: 10, padding: '2px 8px', borderRadius: 4,
+            background: 'rgba(79, 224, 168, 0.1)', color: '#4fe0a8', border: '1px solid rgba(79, 224, 168, 0.25)',
+          }}>
+            {policy.mode} Mode
+          </span>
+        </div>
       </div>
 
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12,
       }}>
-        {params.map((p) => (
-          <div key={p.label} style={{
-            padding: '12px 14px', background: 'rgba(255, 255, 255, 0.02)',
-            borderRadius: 8, border: '1px solid rgba(255, 255, 255, 0.05)',
-          }}>
-            <div style={{
-              fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '.08em',
-              textTransform: 'uppercase' as const, color: '#64748b', marginBottom: 5,
+        {params.map((p) => {
+          const isDefaulted = defaulted.has(p.key);
+          const isClamped = clamped.has(p.key);
+          const flagged = isDefaulted || isClamped;
+          return (
+            <div key={p.label} style={{
+              padding: '12px 14px',
+              background: flagged ? 'rgba(212, 170, 70, 0.05)' : 'rgba(255, 255, 255, 0.02)',
+              borderRadius: 8,
+              border: `1px solid ${flagged ? 'rgba(212, 170, 70, 0.28)' : 'rgba(255, 255, 255, 0.05)'}`,
             }}>
-              {p.label}
+              <div style={{
+                fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '.08em',
+                textTransform: 'uppercase' as const, color: '#64748b', marginBottom: 5,
+              }}>
+                {p.label}
+              </div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 17, fontWeight: 600, color: 'var(--white)' }}>
+                {p.value}
+              </div>
+              <div style={{
+                fontFamily: 'var(--mono)', fontSize: 9.5, marginTop: 3,
+                color: flagged ? '#d4aa46' : '#475569',
+              }}>
+                {isDefaulted ? 'Defaulted — not in your sentence' : isClamped ? 'Clamped to limit' : p.note}
+              </div>
             </div>
-            <div style={{ fontFamily: 'var(--mono)', fontSize: 17, fontWeight: 600, color: 'var(--white)' }}>
-              {p.value}
-            </div>
-            <div style={{ fontFamily: 'var(--mono)', fontSize: 9.5, color: '#475569', marginTop: 3 }}>
-              {p.note}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={{
@@ -202,6 +266,36 @@ function PolicyPreviewCard({ policy }: { policy: ParsedPolicy }) {
         <span style={{ color: '#4fe0a8', fontWeight: 600 }}>Summary:</span>
         {policy.interpretation}
       </div>
+
+      {/* Defaults and clamps, itemised so the numbers above can be checked against them. */}
+      {(policy.warnings ?? []).length > 0 && (
+        <ul style={{
+          margin: '12px 0 0', padding: '10px 12px 10px 26px', borderRadius: 8,
+          background: 'rgba(212, 170, 70, 0.06)', border: '1px solid rgba(212, 170, 70, 0.22)',
+          fontFamily: 'var(--mono)', fontSize: 10.5, color: '#d4aa46', lineHeight: 1.7,
+        }}>
+          {(policy.warnings ?? []).map((w) => <li key={w}>{w}</li>)}
+        </ul>
+      )}
+
+      <ul style={{
+        margin: '12px 0 0', padding: '10px 12px 10px 26px', borderRadius: 8,
+        background: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.06)',
+        fontFamily: 'var(--mono)', fontSize: 10.5, color: '#94a3b8', lineHeight: 1.7,
+      }}>
+        {(policy.advisories ?? []).map((a) => <li key={a}>{a}</li>)}
+        <li>
+          The model proposes; your key disposes. Nothing reaches the chain until you confirm with your own wallet.
+        </li>
+      </ul>
+
+      {policy.source !== 'llm' && (
+        <div style={{
+          marginTop: 12, fontFamily: 'var(--mono)', fontSize: 10.5, color: '#d4aa46',
+        }}>
+          Parsed without the model{policy.llmSkipReason ? ` — ${policy.llmSkipReason}` : ''}.
+        </div>
+      )}
     </div>
   );
 }
@@ -302,7 +396,14 @@ export default function AppPage() {
     ? demoPositions
     : [];
 
-  const totalGuardedUsd = displayedPositions.reduce((acc, p) => acc + p.balance * p.priceUsd * p.multiplier, 0);
+  // Only positions with a price feed contribute to the USD total; the count of
+  // the rest is surfaced instead of silently under-reporting the vault.
+  const pricedPositions = displayedPositions.filter((p) => p.priceUsd !== null);
+  const unpricedPositionCount = displayedPositions.length - pricedPositions.length;
+  const totalGuardedUsd = pricedPositions.reduce(
+    (acc, p) => acc + p.balance * (p.priceUsd as number) * p.multiplier,
+    0,
+  );
 
   // Policy parsing state
   const [policyText, setPolicyText] = useState('');
@@ -318,10 +419,39 @@ export default function AppPage() {
   const [isDepositing, setIsDepositing] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState<string | null>(null);
 
+  // Paste-any-mint state for deposits beyond the three listed assets
+  const [isMintPanelOpen, setIsMintPanelOpen] = useState(false);
+  const [mintInput, setMintInput] = useState('');
+  const [isInspectingMint, setIsInspectingMint] = useState(false);
+  const [mintError, setMintError] = useState<string | null>(null);
+  const [customToken, setCustomToken] = useState<ResolvedToken | null>(null);
+
   const fallbackMint = KNOWN_MINTS[depositAsset];
   const currentWalletBalance = isRealWalletConnected
     ? (walletBalances[depositMint] ?? (fallbackMint ? walletBalances[fallbackMint] : undefined) ?? 0)
     : (demoMode ? (demoWalletBalances[depositAsset] ?? 42.50) : 0);
+
+  // What the optimistic position row should say about the asset being deposited.
+  // A pasted token carries its own resolved identity and live price, so it is not
+  // displayed under a placeholder symbol or valued at a flat $100.
+  const depositDisplay = customToken
+    ? {
+        symbol: customToken.symbol,
+        name: customToken.name,
+        // null when the pasted mint has no feed; the row then shows no USD figure.
+        priceUsd: customToken.priceUsd,
+        multiplier: customToken.multiplier || 1.0,
+      }
+    : {
+        symbol: depositAsset,
+        name:
+          depositAsset === 'SPYX' ? 'S&P 500 Tokenized'
+          : depositAsset === 'GLDX' ? 'Physical Gold Tokenized'
+          : depositAsset === 'QQQX' ? 'Nasdaq 100 Tokenized'
+          : `${depositAsset} Tokenized`,
+        priceUsd: DEFAULT_PRICES[depositAsset] || 100.0,
+        multiplier: 1.0,
+      };
 
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
 
@@ -329,6 +459,65 @@ export default function AppPage() {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
   };
+
+  /**
+   * Resolve a pasted mint into the deposit selector.
+   *
+   * /api/token-info is the gate: it rejects malformed addresses, non-mint
+   * accounts, and anything that is not SPL or Token-2022, and it reports whether
+   * the token is a verified xStock. Depositing an unverified token is allowed —
+   * the vault takes any Token-2022 or SPL mint — but it is never silent.
+   */
+  const inspectMint = useCallback(async () => {
+    const trimmed = mintInput.trim();
+    if (!trimmed) return;
+
+    setMintError(null);
+    // Cheap local check first, so a typo does not cost a round trip.
+    try {
+      new PublicKey(trimmed);
+    } catch {
+      setCustomToken(null);
+      setMintError('Not a valid Solana address — expected base58, e.g. XsoCS1…f2W');
+      return;
+    }
+
+    setIsInspectingMint(true);
+    try {
+      const res = await fetch(`/api/token-info?mint=${encodeURIComponent(trimmed)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to inspect mint account');
+
+      const resolved: ResolvedToken = {
+        mint: data.mint,
+        symbol: data.symbol || `${data.mint.slice(0, 4)}…${data.mint.slice(-4)}`,
+        name: data.name || 'Custom Solana token',
+        decimals: data.decimals ?? 8,
+        isToken2022: !!data.isToken2022,
+        isVerifiedXStock: !!data.isVerifiedXStock,
+        authenticityLabel: data.authenticityLabel || 'Unverified token',
+        priceUsd: data.priceUsd ?? null,
+        multiplier: data.multiplier ?? 1.0,
+      };
+
+      // A pasted address for a listed asset should land on its pill, so the
+      // known price feed and labels apply instead of a "custom" duplicate.
+      const knownSymbol = Object.keys(KNOWN_MINTS).find((sym) => KNOWN_MINTS[sym] === resolved.mint);
+
+      setCustomToken(knownSymbol ? null : resolved);
+      setDepositMint(resolved.mint);
+      setDepositAsset(knownSymbol || resolved.symbol);
+      setDepositAmount('');
+      setIsMintPanelOpen(false);
+      setMintInput('');
+      showToast(`Selected ${knownSymbol || resolved.symbol} for deposit`, 'ok');
+    } catch (err: any) {
+      setCustomToken(null);
+      setMintError(err.message || 'Failed to inspect mint account');
+    } finally {
+      setIsInspectingMint(false);
+    }
+  }, [mintInput]);
 
   const parseNLPolicy = useCallback(async () => {
     if (!policyText.trim()) return;
@@ -347,6 +536,13 @@ export default function AppPage() {
           ...data.policy,
           targetAsset: data.policy.targetAsset ?? 'USDC',
           maxSlippageBps: data.policy.maxSlippageBps ?? 50,
+          defaultedFields: data.policy.defaultedFields ?? [],
+          clampedFields: data.policy.clampedFields ?? [],
+          warnings: data.policy.warnings ?? [],
+          advisories: data.advisories ?? [],
+          source: data.source ?? 'deterministic',
+          model: data.model,
+          llmSkipReason: data.llmSkipReason,
         });
       } else {
         setParseError(data.error ?? 'Parse failed');
@@ -379,12 +575,12 @@ export default function AppPage() {
     try {
       if (demoMode && !isRealWalletConnected) {
         const newDemoPos: GuardedPosition = {
-          symbol: depositAsset,
-          name: depositAsset === 'SPYX' ? 'S&P 500 Tokenized' : depositAsset === 'GLDX' ? 'Physical Gold Tokenized' : depositAsset === 'QQQX' ? 'Nasdaq 100 Tokenized' : `${depositAsset} Tokenized`,
+          symbol: depositDisplay.symbol,
+          name: depositDisplay.name,
           mint: mint,
           balance: numAmount,
-          priceUsd: DEFAULT_PRICES[depositAsset] || 100.0,
-          multiplier: 1.0,
+          priceUsd: depositDisplay.priceUsd,
+          multiplier: depositDisplay.multiplier,
           policy: {
             drawdownBps: parsedPolicy?.drawdownThresholdBps || 800,
             exitBps: parsedPolicy?.exitPercentBps || 7500,
@@ -456,13 +652,13 @@ export default function AppPage() {
       // Optimistically insert new guarded position so it reflects instantly on UI
       const newPosPubkey = data.positionPubkey || `pos-${Date.now()}`;
       const optimisticPos: GuardedPosition = {
-        symbol: depositAsset,
-        name: depositAsset === 'SPYX' ? 'S&P 500 Tokenized' : depositAsset === 'GLDX' ? 'Physical Gold Tokenized' : depositAsset === 'QQQX' ? 'Nasdaq 100 Tokenized' : `${depositAsset} Tokenized`,
+        symbol: depositDisplay.symbol,
+        name: depositDisplay.name,
         mint: mint,
         positionPubkey: newPosPubkey,
         balance: numAmount,
-        priceUsd: DEFAULT_PRICES[depositAsset] || 100.0,
-        multiplier: 1.0,
+        priceUsd: depositDisplay.priceUsd,
+        multiplier: depositDisplay.multiplier,
         policy: {
           drawdownBps: parsedPolicy?.drawdownThresholdBps || 800,
           exitBps: parsedPolicy?.exitPercentBps || 7500,
@@ -885,6 +1081,11 @@ export default function AppPage() {
                     <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: '#4fe0a8' }}>
                       {displayedPositions.length} active asset vault{displayedPositions.length === 1 ? '' : 's'} guarded
                     </div>
+                    {unpricedPositionCount > 0 && (
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: '#d4aa46', marginTop: 4 }}>
+                        Excludes {unpricedPositionCount} unpriced mint{unpricedPositionCount === 1 ? '' : 's'} (no price feed)
+                      </div>
+                    )}
                   </div>
 
                   <div style={{
@@ -987,7 +1188,8 @@ export default function AppPage() {
                           </tr>
                         ) : (
                           displayedPositions.map((pos, idx) => {
-                            const val = pos.balance * pos.priceUsd * pos.multiplier;
+                            const priced = pos.priceUsd !== null;
+                            const val = (pos.priceUsd ?? 0) * pos.balance * pos.multiplier;
                             const rowKey = pos.positionPubkey || `${pos.symbol}-${pos.mint}-${idx}`;
                             return (
                               <tr key={rowKey} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)', fontFamily: 'var(--mono)', fontSize: 12 }}>
@@ -998,11 +1200,11 @@ export default function AppPage() {
                                 <td style={{ padding: '16px 18px', color: '#cbd5e1' }}>
                                   {pos.balance.toFixed(2)} tokens
                                 </td>
-                                <td style={{ padding: '16px 18px', color: '#cbd5e1' }}>
-                                  ${(pos.priceUsd * pos.multiplier).toFixed(2)}
+                                <td style={{ padding: '16px 18px', color: priced ? '#cbd5e1' : '#d4aa46' }}>
+                                  {priced ? `$${((pos.priceUsd as number) * pos.multiplier).toFixed(2)}` : 'no price feed'}
                                 </td>
-                                <td style={{ padding: '16px 18px', fontWeight: 600, color: 'var(--white)' }}>
-                                  {formatCurrency(val)}
+                                <td style={{ padding: '16px 18px', fontWeight: 600, color: priced ? 'var(--white)' : '#64748b' }}>
+                                  {priced ? formatCurrency(val) : '—'}
                                 </td>
                                 <td style={{ padding: '16px 18px', color: '#94a3b8', fontSize: 11 }}>
                                   Drop &gt; {(pos.policy.drawdownBps / 100).toFixed(0)}% → {(pos.policy.exitBps / 100).toFixed(0)}% to {pos.policy.target}
@@ -1107,6 +1309,8 @@ export default function AppPage() {
                           onClick={() => {
                             setDepositAsset(sym);
                             setDepositMint(KNOWN_MINTS[sym] || '');
+                            setCustomToken(null);
+                            setDepositAmount('');
                           }}
                           style={{
                             padding: '10px 8px', borderRadius: 8,
@@ -1120,6 +1324,120 @@ export default function AppPage() {
                         </button>
                       ))}
                     </div>
+
+                    {/* Any other token, by mint address */}
+                    <button
+                      id="deposit-paste-mint-btn"
+                      onClick={() => {
+                        setIsMintPanelOpen((open) => !open);
+                        setMintError(null);
+                        setTimeout(() => {
+                          document.getElementById('deposit-mint-input')?.focus();
+                        }, 50);
+                      }}
+                      style={{
+                        marginTop: 8, width: '100%', padding: '9px 10px', borderRadius: 8,
+                        border: `1px dashed ${isMintPanelOpen ? 'rgba(79, 224, 168, 0.6)' : 'rgba(79, 224, 168, 0.35)'}`,
+                        background: 'rgba(79, 224, 168, 0.05)',
+                        color: '#4fe0a8', fontFamily: 'var(--mono)', fontSize: 11.5, fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {isMintPanelOpen ? '− Hide mint address' : '+ Paste mint address (any Solana token)'}
+                    </button>
+
+                    {isMintPanelOpen && (
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <input
+                            id="deposit-mint-input"
+                            value={mintInput}
+                            onChange={(e) => {
+                              setMintInput(e.target.value);
+                              setMintError(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') inspectMint();
+                            }}
+                            placeholder="Paste any Solana mint address (base58)…"
+                            spellCheck={false}
+                            autoComplete="off"
+                            style={{
+                              flex: 1, minWidth: 0,
+                              background: 'rgba(255, 255, 255, 0.03)',
+                              border: '1px solid rgba(255, 255, 255, 0.08)',
+                              borderRadius: 8, padding: '10px 12px',
+                              color: 'var(--white)', fontFamily: 'var(--mono)', fontSize: 11.5,
+                              outline: 'none',
+                            }}
+                          />
+                          <button
+                            id="deposit-inspect-mint-btn"
+                            onClick={inspectMint}
+                            disabled={isInspectingMint || !mintInput.trim()}
+                            className="btn-ghost"
+                            style={{ padding: '9px 16px', fontSize: 12 }}
+                          >
+                            {isInspectingMint ? 'Inspecting…' : 'Use token'}
+                          </button>
+                        </div>
+
+                        {mintError && (
+                          <div style={{
+                            marginTop: 8, fontFamily: 'var(--mono)', fontSize: 10.5,
+                            color: '#f47c6c', lineHeight: 1.6,
+                          }}>
+                            {mintError}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* What the pasted address actually is, before any funds move */}
+                    {customToken && (
+                      <div style={{
+                        marginTop: 10, padding: '12px 14px', borderRadius: 10,
+                        background: 'rgba(79, 224, 168, 0.05)',
+                        border: `1px solid ${customToken.isVerifiedXStock ? 'rgba(79, 224, 168, 0.28)' : 'rgba(216, 155, 74, 0.35)'}`,
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+                          <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600, color: 'var(--white)' }}>
+                            {customToken.symbol}
+                          </div>
+                          <div style={{
+                            fontFamily: 'var(--mono)', fontSize: 9.5,
+                            color: customToken.isVerifiedXStock ? '#4fe0a8' : '#d4aa46',
+                          }}>
+                            {customToken.authenticityLabel}
+                          </div>
+                        </div>
+                        <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: '#94a3b8', marginTop: 4 }}>
+                          {customToken.name}
+                        </div>
+                        <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: '#64748b', marginTop: 6, lineHeight: 1.7 }}>
+                          <div>Mint: {customToken.mint.slice(0, 6)}…{customToken.mint.slice(-6)}</div>
+                          <div>
+                            {customToken.isToken2022 ? 'Token-2022' : 'SPL Token'} · {customToken.decimals} decimals
+                            {customToken.multiplier !== 1 ? ` · multiplier ${customToken.multiplier}` : ''}
+                            {customToken.priceUsd !== null ? ` · $${customToken.priceUsd.toFixed(2)}` : ' · no price feed'}
+                          </div>
+                          <div style={{ color: currentWalletBalance > 0 ? '#4fe0a8' : '#d4aa46' }}>
+                            Wallet holds {currentWalletBalance.toFixed(2)} {customToken.symbol}
+                            {currentWalletBalance > 0 ? '' : ' — deposit will be rejected until you hold some'}
+                          </div>
+                        </div>
+                        {!customToken.isVerifiedXStock && (
+                          <div style={{
+                            marginTop: 8, fontFamily: 'var(--mono)', fontSize: 10, color: '#d4aa46',
+                            lineHeight: 1.6,
+                          }}>
+                            Not a verified xStock. The vault accepts it, but the guardian&apos;s price and
+                            multiplier checks are built for issuer-verified tokens — treat drawdown triggers
+                            on this asset as best-effort.
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Amount Input */}
@@ -1263,25 +1581,27 @@ export default function AppPage() {
                                   {p.symbol} · {p.balance.toFixed(2)} shares
                                 </div>
                                 <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: '#64748b', marginTop: 2 }}>
-                                  Normalized Price: ${(p.priceUsd * p.multiplier).toFixed(2)}
+                                  {p.priceUsd !== null
+                                    ? `Normalized Price: $${(p.priceUsd * p.multiplier).toFixed(2)}`
+                                    : 'No price feed for this mint'}
                                 </div>
                               </div>
 
                               <div style={{ textAlign: 'right' }}>
-                                <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600, color: '#4fe0a8' }}>
-                                  {formatCurrency(p.balance * p.priceUsd * p.multiplier)}
+                                <div style={{
+                                  fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600,
+                                  color: p.priceUsd !== null ? '#4fe0a8' : '#64748b',
+                                }}>
+                                  {p.priceUsd !== null ? formatCurrency(p.balance * p.priceUsd * p.multiplier) : '—'}
                                 </div>
                                 <button
+                                  type="button"
+                                  className="btn-ghost"
+                                  style={{ marginTop: 8 }}
                                   disabled={!!isWithdrawing}
                                   onClick={() => handleWithdraw(p.positionPubkey || '', p.symbol)}
-                                  style={{
-                                    background: 'none', border: 'none', color: isW ? '#64748b' : '#f47c6c',
-                                    fontFamily: 'var(--mono)', fontSize: 10,
-                                    cursor: isWithdrawing ? 'not-allowed' : 'pointer',
-                                    padding: 0, marginTop: 4,
-                                  }}
                                 >
-                                  {isW ? 'Withdrawing…' : 'Withdraw'}
+                                  {isW ? 'Withdrawing…' : 'Withdraw to wallet'}
                                 </button>
                               </div>
                             </div>

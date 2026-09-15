@@ -22,6 +22,8 @@ export async function POST(req: NextRequest) {
 
 CRITICAL RULE: You must ONLY answer based on the data provided in the user's message. Do NOT use your training knowledge about stock prices, historical performance, or financial events. If the data doesn't contain the answer, say so explicitly — never fill gaps with recalled facts.
 
+Do not infer or invent dates, years, peak/trough pairs, corporate-action exclusion windows, split-adjustment status, or whether a price series is already adjusted. The fact that an event occurs before a price point does NOT prove that the point is adjusted or post-split. Distinguish normalized prices from raw prices. If the context does not define an exclusion window, say that the requested exclusion cannot be calculated precisely. For maximum drawdown, use the explicitly supplied max-drawdown peak and trough, not the overall high and low unless they are the same points. Do not claim a corporate action changed or did not change a result unless the supplied data proves it.
+
 You have access to the following real data about ${ticker}:
 ${context}
 ${backtestInfo ? `Backtest Results:\n${backtestInfo}` : ''}
@@ -36,7 +38,10 @@ Be concise, precise, and professional. Use specific numbers from the data. Remov
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify({
-            model: 'claude-haiku-4-5',
+            // Use Anthropic's versioned API model identifier. The unversioned
+            // alias is not accepted by every Messages API account and caused
+            // this route to silently fall through to the local responder.
+            model: 'claude-haiku-4-5-20251001',
             max_tokens: 512,
             system: systemPrompt,
             messages: [{ role: 'user', content: question }],
@@ -49,6 +54,10 @@ Be concise, precise, and professional. Use specific numbers from the data. Remov
           if (answer) {
             return NextResponse.json({ answer, source: 'ai' });
           }
+        } else {
+          // Keep the provider error in server logs for diagnosis, without
+          // exposing account or provider details to the browser.
+          console.warn('Anthropic API request failed:', res.status, await res.text());
         }
       } catch (e) {
         console.warn('Anthropic API call failed, falling back to local grounded analyst:', e);
@@ -59,8 +68,23 @@ Be concise, precise, and professional. Use specific numbers from the data. Remov
     const qLower = question.toLowerCase();
     let answer = '';
 
+    const requestedTickers = [...new Set((question.match(/\b[A-Z]{2,5}X?\b/g) ?? []).map((symbol) => symbol.toUpperCase()))];
+    const asksForComparison = /\b(compare|versus|vs\.?|which had|larger|higher|lower|better)\b/i.test(question);
+    if (asksForComparison && requestedTickers.length > 1) {
+      answer = `I cannot compare ${requestedTickers.join(' and ')} from the supplied context. It contains data for ${ticker} only, so no claim about the relative drawdown is reliable.`;
+      return NextResponse.json({ answer, source: 'grounded-engine' });
+    }
+
+    const asksForRange = /\b(range|high(?:est)?\s*(?:and|to|vs\.?|[-–])\s*low(?:est)?|low(?:est)?\s*(?:and|to|vs\.?|[-–])\s*high(?:est)?|how\s+(?:high|low))\b/i.test(question);
+
     if (backtestInfo) {
       answer = `Backtest Summary for ${ticker}:\n${backtestInfo}\n\nAll drawdown measurements evaluate normalized share-equivalent prices (raw price x multiplier) and exclude corporate action execution windows to prevent false liquidations.`;
+    } else if (asksForRange && stats?.minPrice != null && stats?.maxPrice != null) {
+      const start = stats.startDate ? ` from ${stats.startDate}` : '';
+      const end = stats.endDate ? ` through ${stats.endDate}` : '';
+      const lowDate = stats.minPriceDate ? ` on ${stats.minPriceDate}` : '';
+      const highDate = stats.maxPriceDate ? ` on ${stats.maxPriceDate}` : '';
+      answer = `Over the available ${ticker} history${start}${end}, the normalized price ranged from $${Number(stats.minPrice).toFixed(2)}${lowDate} to $${Number(stats.maxPrice).toFixed(2)}${highDate}. That is a $${(Number(stats.maxPrice) - Number(stats.minPrice)).toFixed(2)} spread (${(((Number(stats.maxPrice) / Number(stats.minPrice)) - 1) * 100).toFixed(1)}% from the low to the high).`;
     } else if (qLower.includes('drawdown') || qLower.includes('drop') || qLower.includes('max')) {
       if (stats?.maxDrawdownPct) {
         answer = `Over the active historical window, ${ticker} experienced a peak-to-trough maximum drawdown of ${stats.maxDrawdownPct}%. The lowest recorded price was $${stats.minPrice?.toFixed(2)} compared to the cycle high of $${stats.maxPrice?.toFixed(2)}.`;

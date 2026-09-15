@@ -112,7 +112,25 @@ export async function GET(req: NextRequest) {
       const known = KNOWN_ASSETS[assetMint];
       const symbol = known?.symbol || `${assetMint.slice(0, 4)}...${assetMint.slice(-4)}`;
       const name = known?.name || `xStock (${symbol})`;
-      const decimals = known?.decimals || 8;
+
+      // Decimals and multiplier come from the mint itself. Assuming 8 decimals for
+      // an unrecognised mint misreports every token with a different precision — a
+      // pasted 9-decimal mint would read as ten times its real balance.
+      let decimals = known?.decimals ?? 8;
+      let multiplier = 1.0;
+      try {
+        const mintAcc = await connection.getParsedAccountInfo(new PublicKey(assetMint));
+        const mintInfo = (mintAcc?.value?.data as any)?.parsed?.info;
+        if (typeof mintInfo?.decimals === 'number') decimals = mintInfo.decimals;
+        const extensions = mintInfo?.extensions || [];
+        const scaled = extensions.find((e: any) => e.extension === 'scaledUiAmountConfig');
+        if (scaled?.state?.multiplier) {
+          multiplier = Number(scaled.state.multiplier) || 1.0;
+        }
+      } catch {
+        // keep the known/default precision and a 1.0 multiplier
+      }
+
       const balance = Number(rawAmount) / Math.pow(10, decimals);
       if (balance <= 0) continue;
 
@@ -151,20 +169,9 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // Check multiplier on mint
-      let multiplier = 1.0;
-      try {
-        const mintAcc = await connection.getParsedAccountInfo(new PublicKey(assetMint));
-        const extensions = (mintAcc?.value?.data as any)?.parsed?.info?.extensions || [];
-        const scaled = extensions.find((e: any) => e.extension === 'scaledUiAmountConfig');
-        if (scaled?.state?.multiplier) {
-          multiplier = Number(scaled.state.multiplier) || 1.0;
-        }
-      } catch {
-        multiplier = 1.0;
-      }
-
-      const priceUsd = DEFAULT_PRICES[symbol] || 100.0;
+      // Only assets with a known price feed get a USD value. Inventing one for an
+      // arbitrary pasted mint would put a fabricated number on the dashboard.
+      const priceUsd = DEFAULT_PRICES[symbol] ?? null;
       const headroomPct = +(policy.drawdownBps / 100).toFixed(1);
 
       parsedPositions.push({
@@ -203,8 +210,9 @@ export async function GET(req: NextRequest) {
       // ignore wallet balance fetch error
     }
 
-    const totalGuardedUsd = parsedPositions.reduce(
-      (acc, p) => acc + p.balance * p.priceUsd * p.multiplier,
+    const pricedPositions = parsedPositions.filter((p) => p.priceUsd !== null);
+    const totalGuardedUsd = pricedPositions.reduce(
+      (acc, p) => acc + p.balance * (p.priceUsd as number) * p.multiplier,
       0
     );
 
@@ -212,6 +220,9 @@ export async function GET(req: NextRequest) {
       owner: ownerStr,
       positions: parsedPositions,
       totalGuardedUsd,
+      // Position count that carries no USD value because the mint has no known
+      // feed; the client labels the total rather than quietly omitting them.
+      unpricedCount: parsedPositions.length - pricedPositions.length,
       count: parsedPositions.length,
       walletBalances,
     });

@@ -66,8 +66,19 @@ export class XStocksClient {
    * Use this to resolve mint addresses — do NOT hardcode addresses.
    */
   async getAssets(): Promise<XStockAsset[]> {
-    const res = await this.http.get("/assets");
-    return res.data as XStockAsset[];
+    const res = await this.http.get("/public/assets", { params: { network: "Solana", pageSize: 100 } });
+    const assets = Array.isArray(res.data) ? res.data : res.data?.nodes;
+    return (assets ?? []).map((asset: any) => {
+      const deployment = asset.deployments?.find((item: any) => item.network === "Solana");
+      return {
+        mint: deployment?.address ?? "",
+        symbol: asset.symbol,
+        name: asset.name,
+        decimals: deployment?.decimals ?? 8,
+        underlyingSymbol: asset.underlying?.symbol ?? asset.underlyingSymbol ?? "",
+        multiplier: 1,
+      };
+    }).filter((asset: XStockAsset) => asset.mint);
   }
 
   /**
@@ -79,8 +90,18 @@ export class XStocksClient {
    */
   async getOraclePrice(mint: string): Promise<OraclePrice | null> {
     try {
-      const res = await this.http.get(`/oracles/${mint}`);
-      return res.data as OraclePrice;
+      const assets = await this.getAssets();
+      const asset = assets.find((item) => item.mint === mint);
+      if (!asset) return null;
+      const symbol = asset.symbol;
+      const [priceRes, multiplierRes] = await Promise.all([
+        this.http.get(`/public/assets/${symbol}/price-data`),
+        this.http.get(`/public/assets/${symbol}/multiplier`, { params: { network: "Solana" } }),
+      ]);
+      const priceUsd = Number(priceRes.data?.quote ?? priceRes.data?.priceUsd ?? priceRes.data?.price);
+      const multiplier = Number(multiplierRes.data?.currentMultiplier ?? asset.multiplier) || 1;
+      if (!Number.isFinite(priceUsd)) return null;
+      return { mint, symbol, priceUsd, multiplier, timestamp: Math.floor(Date.now() / 1000) };
     } catch (err: any) {
       if (err.response?.status === 404) return null;
       throw err;
@@ -95,8 +116,31 @@ export class XStocksClient {
    */
   async getCorporateActions(mint: string): Promise<CorporateAction[]> {
     try {
-      const res = await this.http.get(`/corporate-actions/${mint}`);
-      return (res.data as CorporateAction[]) ?? [];
+      const assets = await this.getAssets();
+      const asset = assets.find((item) => item.mint === mint);
+      if (!asset) return [];
+      const res = await this.http.get(`/public/assets/${asset.symbol}/multiplier/history`, {
+        params: { network: "Solana", page: 1, pageSize: 100 },
+      });
+      const events = Array.isArray(res.data) ? res.data : res.data?.nodes;
+      return (events ?? []).map((event: any) => {
+        const newMultiplier = Number(event.multiplier);
+        const oldMultiplier = Number(event.previousMultiplier);
+        const pctChange = Math.abs((newMultiplier - oldMultiplier) / oldMultiplier);
+        const reason = String(event.reason ?? "").toLowerCase();
+        const activationTime = Math.floor(new Date(event.activationDateTime).getTime() / 1000);
+        return {
+          mint,
+          symbol: asset.symbol,
+          actionType: reason.includes("reverse") ? "reverse_split" : reason.includes("split") || pctChange >= 0.05 ? "split" : "dividend",
+          newMultiplier,
+          oldMultiplier,
+          exDate: new Date(activationTime * 1000).toISOString().slice(0, 10),
+          activationTime,
+          applied: Date.now() / 1000 >= activationTime,
+          needsReview: pctChange >= 0.03 && pctChange <= 0.07,
+        } as CorporateAction;
+      });
     } catch (err: any) {
       if (err.response?.status === 404) return [];
       throw err;
