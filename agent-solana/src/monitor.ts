@@ -72,7 +72,10 @@ export class AegisMonitor {
     this.connection = opts?.connection ?? new Connection(config.rpcUrl, "confirmed");
     this.agentKeypair = opts?.agentKeypair ?? config.agentKeypair;
     this.customPriceProvider = opts?.customPriceProvider;
-    this.isDryRun = opts?.dryRun ?? false; // default to active dispatch when constructed directly
+    // Fail safe by default: a monitor constructed without an explicit dryRun
+    // decision must not be able to move funds. Dispatch is opted into, never
+    // inherited from the absence of an option.
+    this.isDryRun = opts?.dryRun ?? true;
 
     if (opts?.program) {
       this.program = opts.program;

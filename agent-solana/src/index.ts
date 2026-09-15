@@ -1,7 +1,10 @@
 import { AegisMonitor } from "./monitor";
+import { config } from "./config";
 
 async function main() {
-  const monitor = new AegisMonitor();
+  // Pass the configured dry-run decision explicitly so the execution mode in the
+  // log line below is the mode actually in force.
+  const monitor = new AegisMonitor({ dryRun: config.dryRun });
 
   // Graceful shutdown on SIGINT/SIGTERM
   process.on("SIGINT", () => {

@@ -5,7 +5,9 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node src/index.ts",
+    "demo:trigger": "ts-node src/demo-trigger.ts",
     "build": "tsc",
+    "start": "node dist/index.js",
     "test": "jest --runInBand"
   },
   "dependencies": {

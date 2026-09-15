@@ -62,3 +62,6 @@ agent-solana/test/
 Thumbs.db
 desktop.ini
 
+
+# Local demo captures
+.demo-shots/

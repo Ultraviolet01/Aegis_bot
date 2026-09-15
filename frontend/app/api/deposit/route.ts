@@ -16,25 +16,6 @@ import * as anchor from '@coral-xyz/anchor';
 import { BN, Program } from '@coral-xyz/anchor';
 import idl from '@/lib/aegis.json';
 
-const TEST_WALLET_SEED = Buffer.alloc(32, 7);
-const TEST_WALLET_PUBKEY = 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB';
-
-async function confirmSig(conn: Connection, sig: string) {
-  for (let i = 0; i < 50; i++) {
-    const res = await conn.getSignatureStatus(sig, { searchTransactionHistory: true });
-    if (res?.value) {
-      if (res.value.err) {
-        throw new Error(`Transaction ${sig} failed: ${JSON.stringify(res.value.err)}`);
-      }
-      if (res.value.confirmationStatus === 'confirmed' || res.value.confirmationStatus === 'finalized') {
-        return res.value;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  throw new Error(`Transaction ${sig} failed to confirm within timeout`);
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -190,24 +171,8 @@ export async function POST(req: NextRequest) {
     tx.add(openPosIx);
     tx.add(setPolicyIx);
 
-    // If deterministic test wallet is used, sign and broadcast directly on-chain
-    if (ownerStr === TEST_WALLET_PUBKEY) {
-      const testKeypair = Keypair.fromSeed(TEST_WALLET_SEED);
-      tx.sign(testKeypair);
-
-      const rawTx = tx.serialize();
-      const sig = await conn.sendRawTransaction(rawTx, { skipPreflight: false });
-      await confirmSig(conn, sig);
-
-      return NextResponse.json({
-        success: true,
-        signature: sig,
-        positionPubkey: positionPda.toBase58(),
-        policyPubkey: policyPda.toBase58(),
-      });
-    }
-
-    // Otherwise return serialized transaction for user's wallet adapter to sign
+    // Returned unsigned: the owner's wallet must sign. This route never holds a
+    // signing key, so there is no server-side path that can open a position.
     const serializedTx = tx
       .serialize({ requireAllSignatures: false, verifySignatures: false })
       .toString('base64');

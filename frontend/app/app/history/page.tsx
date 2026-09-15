@@ -546,13 +546,15 @@ function toCandles(points: OracleDataPoint[]): CandlePoint[] {
 export default function HistoryPage() {
   const [ticker, setTicker] = useState('SPYX');
   const [customStock, setCustomStock] = useState<SolanaStock | null>(null);
-  const [priceHistory, setPriceHistory] = useState<OracleDataPoint[]>(() => generateDemoHistory('SPYX'));
-  const [corporateActions, setCorporateActions] = useState<CorporateAction[]>(() => {
-    const s = SOLANA_STOCKS.find((item) => item.symbol === 'SPYX');
-    return s ? s.corporateActions : [];
-  });
+  const [priceHistory, setPriceHistory] = useState<OracleDataPoint[]>([]);
+  const [corporateActions, setCorporateActions] = useState<CorporateAction[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Set whenever the series on screen was generated rather than fetched. It drives
+  // the banner and is handed to the Q&A grounding context, so a generated chart
+  // can never be answered about as though it were real market history.
+  const [syntheticNotice, setSyntheticNotice] = useState<string | null>(null);
 
   // Dropdown Bar State
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -587,11 +589,11 @@ export default function HistoryPage() {
     setTicker(symbol);
     setIsDropdownOpen(false);
     setSearchFilter('');
-    const stock = SOLANA_STOCKS.find((s) => s.symbol === symbol);
-    if (stock) {
-      setPriceHistory(generateDemoHistory(symbol, stock.basePrice, stock.multiplier));
-      setCorporateActions(stock.corporateActions);
-    }
+    // Clear rather than prefill: loadData will fetch the real series, and an
+    // empty chart is honest where a generated one is not.
+    setPriceHistory([]);
+    setCorporateActions([]);
+    setSyntheticNotice(null);
   };
 
   const selectMintAddress = useCallback(async (mintAddr: string) => {
@@ -609,8 +611,11 @@ export default function HistoryPage() {
     if (known) {
       setCustomStock(null);
       setTicker(known.symbol);
-      setPriceHistory(generateDemoHistory(known.symbol, known.basePrice, known.multiplier));
-      setCorporateActions(known.corporateActions);
+      // loadData fetches the real series for a listed ticker, so clear rather
+      // than prefill with a generated one.
+      setPriceHistory([]);
+      setCorporateActions([]);
+      setSyntheticNotice(null);
       return;
     }
 
@@ -638,8 +643,11 @@ export default function HistoryPage() {
 
       setCustomStock(stockObj);
       setTicker(stockObj.symbol);
+      // An arbitrary mint has no oracle history feed, so this series is generated
+      // from the live price — and is labelled as such instead of passing for real.
       setPriceHistory(generateDemoHistory(stockObj.symbol, stockObj.basePrice, stockObj.multiplier));
       setCorporateActions(stockObj.corporateActions);
+      setSyntheticNotice('No oracle history feed exists for this mint, so the series is generated from its live price and multiplier');
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -651,6 +659,11 @@ export default function HistoryPage() {
     if (customStock && customStock.symbol === ticker) return;
     setLoading(true);
     setError(null);
+    // Populated from on-chain token info. Used only as a fallback source; real
+    // history is preferred and a generated series is always labelled.
+    let onChainActions: CorporateAction[] | null = null;
+    let livePrice: number | null = null;
+    let liveMultiplier = activeStock.multiplier;
     try {
       // SPYX uses the official public v2 endpoints. The token only launched
       // in 2025, so this feed intentionally represents token history, not a
@@ -672,24 +685,23 @@ export default function HistoryPage() {
 
         setPriceHistory(officialHistory);
         setCorporateActions(multiplierEvents);
+        setSyntheticNotice(null);
         return;
       }
 
-      // 1. First query on-chain token info & live Jupiter price
+      // 1. On-chain token info: metadata, multiplier and on-chain corporate
+      //    actions. Held as fallbacks only — this is a single price point, and a
+      //    series generated from it would be a fabrication, not a history.
       try {
         const tokenInfoRes = await fetch(`/api/token-info?mint=${activeStock.mint}`);
         if (tokenInfoRes.ok) {
           const tokenData = await tokenInfoRes.json();
-          if (tokenData && tokenData.priceUsd) {
-            setPriceHistory(generateDemoHistory(ticker, tokenData.priceUsd, tokenData.multiplier));
-          }
-          if (tokenData?.corporateActions?.length > 0) {
-            setCorporateActions(tokenData.corporateActions);
-            return;
-          }
+          if (tokenData?.priceUsd) livePrice = tokenData.priceUsd;
+          if (tokenData?.multiplier) liveMultiplier = tokenData.multiplier;
+          if (tokenData?.corporateActions?.length > 0) onChainActions = tokenData.corporateActions;
         }
       } catch {
-        // Fall back to REST or demo
+        // fall through to the oracle feed
       }
 
       // 2. Query xStocks API or fallback to calibrated demo
@@ -721,11 +733,17 @@ export default function HistoryPage() {
         isDemo: false,
       }));
       setPriceHistory(history);
-      setCorporateActions(liveActions);
+      setCorporateActions(liveActions.length > 0 ? liveActions : (onChainActions ?? []));
+      setSyntheticNotice(null);
     } catch (err: any) {
       setError(err.message);
-      setPriceHistory(generateDemoHistory(ticker, activeStock.basePrice, activeStock.multiplier));
-      setCorporateActions(activeStock.corporateActions);
+      // Last resort only, and explicitly flagged: the chart and every statistic
+      // derived from it are generated, and the Q&A context is told so.
+      setPriceHistory(generateDemoHistory(ticker, livePrice ?? activeStock.basePrice, liveMultiplier));
+      setCorporateActions(onChainActions ?? activeStock.corporateActions);
+      setSyntheticNotice(
+        `Oracle price history unavailable, so the series is generated from the live price (${err.message})`,
+      );
     } finally {
       setLoading(false);
     }
@@ -877,6 +895,11 @@ export default function HistoryPage() {
     let answer = '';
     try {
       const dataContext = [
+        // Stated first and unconditionally, so the model can never treat a
+        // generated series as observed history.
+        syntheticNotice
+          ? `DATA PROVENANCE: SYNTHETIC — ${syntheticNotice}. The prices below were generated by the app, not fetched from any market or oracle. Say so if the user asks for performance figures, and do not describe them as real market history.`
+          : 'DATA PROVENANCE: real — prices were fetched from the xStocks oracle feed.',
         `Ticker: ${ticker}`,
         `Points count: ${priceHistory.length}`,
         stats && `Latest price: ${formatPrice(stats.latestPrice)}`,
@@ -1046,7 +1069,7 @@ export default function HistoryPage() {
         </div>
 
         {/* ── Status Notice ── */}
-        {error && (
+        {(error || syntheticNotice) && (
           <div
             style={{
               marginBottom: 24,
@@ -1061,8 +1084,20 @@ export default function HistoryPage() {
               lineHeight: 1.6,
             }}
           >
-            <span style={{ color: '#d4aa46', fontWeight: 600 }}>Price history is simulated</span>
-            {' '}(xStocks API unavailable) — corporate-action events marked{' '}
+            {syntheticNotice && (
+              <>
+                <span style={{ color: '#d4aa46', fontWeight: 600 }}>Price history is simulated</span>
+                {' '}— {syntheticNotice}. The chart, the statistics below and any backtest run over
+                it are generated, not market data.{' '}
+              </>
+            )}
+            {error && !syntheticNotice && (
+              <>
+                <span style={{ color: '#d4aa46', fontWeight: 600 }}>Data source warning</span>
+                {' '}— {error}.{' '}
+              </>
+            )}
+            Corporate-action events marked{' '}
             <span style={{ color: '#4fe0a8', fontWeight: 600 }}>Live On-Chain</span> reflect real on-chain state
           </div>
         )}

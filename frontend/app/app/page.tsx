@@ -306,7 +306,6 @@ export default function AppPage() {
   const { publicKey, connected, sendTransaction } = useWallet();
   const { connection } = useConnection();
 
-  const [testWallet, setTestWallet] = useState<string | null>(null);
   const [demoMode, setDemoMode] = useState(false);
   const [tab, setTab] = useState<Tab>('overview');
 
@@ -325,21 +324,11 @@ export default function AppPage() {
     NVDAX: 15.0,
   });
 
-  // Sync test wallet from URL search params if provided (e.g. ?wallet=GmaDrpp...)
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const w = params.get('wallet');
-      if (w) {
-        setTestWallet(w);
-      }
-    }
-  }, []);
-
-  const isRealWalletConnected = !!publicKey || !!testWallet;
-  const activeAddress = publicKey
-    ? publicKey.toBase58()
-    : testWallet || (demoMode ? '7EYnhrCQZKpFz4eW8v9xQ3kLMxS8gDevnetDemoAcct' : '');
+  // A wallet connection is the only way to reach signed actions. There is
+  // deliberately no address-in-URL or fixture-key path: anything that could act
+  // without the owner's signature would be a custody bypass, not a convenience.
+  const isRealWalletConnected = !!publicKey;
+  const activeAddress = publicKey ? publicKey.toBase58() : '';
   const isUserActive = isRealWalletConnected || demoMode;
 
   // Fetch real on-chain positions for connected wallet
@@ -395,6 +384,47 @@ export default function AppPage() {
     : demoMode
     ? demoPositions
     : [];
+
+  // Which network this build is actually pointed at, derived from the configured
+  // RPC endpoint rather than asserted.
+  const rpcEndpoint =
+    process.env.NEXT_PUBLIC_SOLANA_RPC_URL || process.env.NEXT_PUBLIC_RPC_URL || '';
+  const environmentLabel = /localhost|127\.0\.0\.1/.test(rpcEndpoint)
+    ? 'Local validator · cloned Solana mainnet'
+    : 'Solana';
+
+  // Live two-venue spread for the first guarded asset, from the same quote method
+  // the guardian uses. null means not fetched yet; never a placeholder number.
+  const spreadMint = displayedPositions[0]?.mint ?? '';
+  const spreadMintLabel = displayedPositions[0] ? ` (${displayedPositions[0].symbol})` : '';
+  const [poolSpread, setPoolSpread] = useState<
+    | { ok: true; spreadBps: number; thresholdBps: number; status: 'OK' | 'DIVERGENT' }
+    | { ok: false; reason: string }
+    | null
+  >(null);
+
+  useEffect(() => {
+    if (!spreadMint) {
+      setPoolSpread(null);
+      return;
+    }
+    let cancelled = false;
+    setPoolSpread(null);
+    (async () => {
+      try {
+        const res = await fetch(`/api/pool-spread?mint=${encodeURIComponent(spreadMint)}`);
+        const json = await res.json();
+        if (!cancelled) {
+          setPoolSpread(json.error ? { ok: false, reason: json.error } : json);
+        }
+      } catch {
+        if (!cancelled) setPoolSpread({ ok: false, reason: 'Price spread lookup failed' });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [spreadMint]);
 
   // Only positions with a price feed contribute to the USD total; the count of
   // the rest is surfaced instead of silently under-reporting the vault.
@@ -814,27 +844,6 @@ export default function AppPage() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {testWallet && !connected && (
-              <button
-                id="disconnect-test-wallet-btn"
-                onClick={() => {
-                  setTestWallet(null);
-                  if (typeof window !== 'undefined') {
-                    const url = new URL(window.location.href);
-                    url.searchParams.delete('wallet');
-                    window.history.replaceState({}, '', url.toString());
-                  }
-                }}
-                style={{
-                  padding: '7px 13px', borderRadius: 8,
-                  border: '1px solid rgba(244, 124, 108, 0.3)',
-                  background: 'rgba(244, 124, 108, 0.1)',
-                  color: '#f47c6c', fontFamily: 'var(--mono)', fontSize: 11, cursor: 'pointer',
-                }}
-              >
-                Disconnect Test Keypair
-              </button>
-            )}
             {!connected && (
               <button
                 id="toggle-demo-mode-btn"
@@ -917,25 +926,17 @@ export default function AppPage() {
             <p style={{
               color: '#94a3b8', fontSize: 15, maxWidth: 440, margin: '0 auto 28px', lineHeight: 1.6,
             }}>
-              Connect Phantom or Solflare on Solana, inspect test wallet holding, or explore simulated vault positions.
+              Connect Phantom or Solflare to deposit, set a policy and withdraw — every action is signed by your wallet. Or explore a simulated vault with no wallet.
             </p>
 
             <div style={{ display: 'flex', justifyContent: 'center', gap: 14, flexWrap: 'wrap' }}>
-              <button
-                id="connect-test-wallet-btn"
-                onClick={() => {
-                  setDemoMode(false);
-                  setTestWallet('GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB');
-                }}
+              <WalletMultiButton
                 style={{
-                  padding: '12px 24px', borderRadius: 10,
+                  padding: '12px 24px', borderRadius: 10, height: 'auto',
                   background: 'var(--mint)', color: '#091912',
-                  border: 'none', fontWeight: 600, fontSize: 14,
-                  cursor: 'pointer', transition: 'opacity 0.15s',
+                  border: 'none', fontWeight: 600, fontSize: 14, lineHeight: 1.4,
                 }}
-              >
-                Connect Test Wallet (GmaDrpp...)
-              </button>
+              />
               <button
                 id="enter-demo-btn"
                 onClick={() => setDemoMode(true)}
@@ -964,7 +965,7 @@ export default function AppPage() {
             </div>
 
             <div style={{ marginTop: 32, display: 'flex', justifyContent: 'center' }}>
-              <NetworkPill label="Solana Devnet · Multi-Pool Guard Online" live />
+              <NetworkPill label={environmentLabel} />
             </div>
           </div>
         ) : (
@@ -1014,17 +1015,8 @@ export default function AppPage() {
                     fontFamily: 'var(--mono)', fontSize: 11, color: '#94a3b8',
                     background: 'rgba(255, 255, 255, 0.04)', padding: '2px 8px', borderRadius: 4,
                   }}>
-                    {activeAddress ? `${activeAddress.slice(0, 6)}...${activeAddress.slice(-4)}` : 'Disconnected'}
+                    {activeAddress ? `${activeAddress.slice(0, 6)}...${activeAddress.slice(-4)}` : demoMode ? 'Demo mode' : 'Disconnected'}
                   </span>
-                  {testWallet && !connected && (
-                    <span style={{
-                      fontFamily: 'var(--mono)', fontSize: 10, color: '#4fe0a8',
-                      background: 'rgba(79, 224, 168, 0.1)', padding: '2px 7px', borderRadius: 4,
-                      border: '1px solid rgba(79, 224, 168, 0.25)',
-                    }}>
-                      Test Keypair Connected
-                    </span>
-                  )}
                   {demoMode && !isRealWalletConnected && (
                     <span style={{
                       fontFamily: 'var(--mono)', fontSize: 10, color: '#d4aa46',
@@ -1038,7 +1030,7 @@ export default function AppPage() {
               </div>
 
               <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                <NetworkPill label="Autonomous Guardian Online" live />
+                <NetworkPill label="Owner-signed actions only" />
                 <Link href="/app/history">
                   <button style={{
                     padding: '8px 14px', borderRadius: 8,
@@ -1101,13 +1093,27 @@ export default function AppPage() {
                       Multi-Pool Oracle Sanity
                     </div>
                     <div style={{
-                      fontFamily: 'var(--mono)', fontSize: 30, fontWeight: 600, color: '#4fe0a8',
+                      fontFamily: 'var(--mono)', fontSize: 30, fontWeight: 600,
+                      color: poolSpread?.ok
+                        ? (poolSpread.status === 'DIVERGENT' ? '#d4aa46' : '#4fe0a8')
+                        : '#64748b',
                       letterSpacing: '-0.03em', marginBottom: 6,
                     }}>
-                      0.02%
+                      {poolSpread === null
+                        ? '…'
+                        : poolSpread.ok
+                          ? `${(poolSpread.spreadBps / 100).toFixed(2)}%`
+                          : '—'}
                     </div>
-                    <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: '#94a3b8' }}>
-                      Raydium vs Orca cross-check (threshold 2.0%)
+                    <div style={{
+                      fontFamily: 'var(--mono)', fontSize: 11, lineHeight: 1.6,
+                      color: poolSpread?.ok && poolSpread.status === 'DIVERGENT' ? '#d4aa46' : '#94a3b8',
+                    }}>
+                      {poolSpread === null
+                        ? 'Fetching live Orca vs Raydium quotes…'
+                        : poolSpread.ok
+                          ? `Live Orca vs Raydium CLMM quote${spreadMintLabel} · guard at ${(poolSpread.thresholdBps / 100).toFixed(1)}%`
+                          : poolSpread.reason}
                     </div>
                   </div>
 
@@ -1121,17 +1127,16 @@ export default function AppPage() {
                       fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '.08em',
                       textTransform: 'uppercase' as const, color: '#64748b', marginBottom: 10,
                     }}>
-                      Guardian Check Frequency
+                      Breach Confirmation
                     </div>
                     <div style={{
                       fontFamily: 'var(--mono)', fontSize: 30, fontWeight: 600, color: 'var(--white)',
                       letterSpacing: '-0.03em', marginBottom: 6,
                     }}>
-                      10s
+                      2 polls
                     </div>
-                    <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: '#4fe0a8', display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <LiveDot />
-                      Zero-withdrawal execution invariant
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: '#94a3b8', lineHeight: 1.6 }}>
+                      Consecutive polls required before an exit is dispatched
                     </div>
                   </div>
                 </div>

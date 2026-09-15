@@ -96,6 +96,64 @@ The program CPIs into the Jupiter v6 aggregator with the route data supplied by 
 
 ---
 
+## Policy parsing flow (dashboard)
+
+```mermaid
+flowchart LR
+    Text["Plain-English rule"] --> Route["POST /api/parse-policy"]
+    Route --> Claude["Claude claude-haiku-4-5<br/>forced extract_policy_parameters tool"]
+    Claude --> Validate["Zod re-validation, then bounds and defaults"]
+    Validate -->|"valid tool call"| Preview["Policy preview"]
+    Validate -->|"Claude unavailable or invalid"| Regex["Deterministic regex parser"]
+    Regex --> Preview
+    Preview --> Sign["Owner signs set_policy on-chain"]
+```
+
+1. The owner types the rule in the dashboard composer and submits it. `parseNLPolicy` posts `{ policyText }` to `/api/parse-policy`.
+2. The route rejects a malformed body with 400, then calls the Anthropic Messages API with model `claude-haiku-4-5`, a single tool named `extract_policy_parameters`, and `tool_choice` pinned to that tool, so the response is a structured object rather than prose. The schema asks for drawdown, oracle deviation, exit percentage, max slippage, target asset, mode, a plain-English interpretation, a confidence score, and `inferredFields` — the list of values the model filled from a default instead of reading from the sentence.
+3. The tool payload is re-validated with Zod. Validation is tolerant of presentation (numeric strings, lower-cased modes, aliased field names) but nothing outside the schema survives.
+4. `boundBps` forces each basis-point field into the program envelope (drawdown ≥ 1%, deviation ≥ 0.1%, exit ≥ 0.01%, all ≤ 100%); slippage is clamped to 1–500 bps. Defaulted and clamped fields are collected separately, and the two fields whose absence can be proven from the text alone — slippage and target asset — are added to the defaulted set regardless of what the model claimed, so a default can never be shown as an instruction.
+5. The preview card renders the source (Claude, or the regex parser when Claude was unavailable), each field with a "Defaulted — not in your sentence" or "Clamped to limit" marker, the itemised warnings, and advisories such as a conservative slippage cap applied to a large exit.
+6. Nothing is signed by the model. The owner approves the parameters and signs `set_policy`; the program checks `has_one = owner` and rejects any other signer.
+
+Fallback: if the API key is missing, Claude errors, or the payload fails validation, the route returns the deterministic parser's result (`lib/policy.ts`) with `source: 'deterministic'` and a stated reason, and the UI badges it as "Regex parser" rather than presenting it as a model result.
+
+---
+
+## Query and History flow (History tab)
+
+```mermaid
+flowchart TD
+    Pick["Select asset, or paste any mint"] --> Load["Load data"]
+    Load --> Info["/api/token-info: mint metadata, live price, corporate actions"]
+    Info -->|"on-chain corporate actions found"| Render["Chart, stats, corporate-action list"]
+    Info -->|"otherwise"| XS["/api/xstocks: oracle history + corporate actions"]
+    XS --> Render
+    Ask["Query bar: a question, or a policy sentence"] --> Intent{"Backtest intent?"}
+    Intent -->|"yes"| Backtest["Backtest over the loaded series"]
+    Intent -->|"no"| Ground
+    Backtest --> Ground["Grounding context: stats, drawdown, series, corporate actions"]
+    Ground --> QA["/api/qa: Claude, grounded answer only"]
+    QA -->|"Claude unavailable"| Engine["Deterministic grounded engine"]
+    QA --> Thread["Answer appended to the thread"]
+    Engine --> Thread
+```
+
+**Loading.** The tab resolves the selected asset by mint: listed tickers come from the local catalogue, and anything else is resolved by pasting a mint address into the selector, which calls `/api/token-info` (on-chain mint metadata, Token-2022 vs SPL, multiplier, Jupiter price, and corporate actions). SPYX is loaded from the public xStocks v2 endpoints (price data and multiplier history). Otherwise the xStocks assets and oracle-history endpoints are used. If the oracle history cannot be fetched, the chart falls back to a generated daily series derived from the live price and the hardcoded catalogue values, and the UI shows a warning that the price history is simulated.
+
+**Stats.** Entry, latest, high, low, coverage dates and the maximum drawdown (with its peak and trough) are all computed in the browser from the loaded series, so every figure in the panel and in the answers below is derived from the same data the chart shows.
+
+**Ask and backtest.** One input handles both. The text is classified by intent first:
+
+- **Backtest** (`backtest:`/`policy:` prefixes, "if it drops … exit …", or "exit N% to"): the sentence is sent to the same `/api/parse-policy` route used by the dashboard, and the returned parameters are walked over the loaded series — entry price is the first point, drawdown is measured against it, per-step oracle deviation is measured against the previous point, and any point within 24 hours of a corporate action is skipped so a split is not counted as a breach. The walk stops at the first drawdown breach and reports each trigger, or states that the policy would not have triggered.
+- **Question**: the client builds a grounding context from the loaded series only — ticker, point count, entry/latest/high/low with dates, coverage window, max drawdown with its peak and trough, the full daily normalized series, and the corporate-action list with multiplier transitions — and posts it to `/api/qa` together with the parsed stats and any backtest summary.
+
+`/api/qa` calls Claude `claude-haiku-4-5-20251001` with a system prompt that forbids using training knowledge: it must answer only from the supplied context, must use the supplied drawdown peak and trough rather than the overall high and low, and must say when the data cannot answer the question. If the model is unavailable the route falls back to a deterministic engine that answers from the same stats by intent (range, drawdown, corporate actions, latest price), refuses cross-ticker comparisons because the context covers one ticker, and returns `source: 'grounded-engine'`. Either way the answer is appended to the query thread with any backtest result attached.
+
+Both paths compute over the series that is actually loaded — including the fallback series — so a simulated chart produces correspondingly simulated drawdown and backtest numbers.
+
+---
+
 ## Current environment: cloned mainnet
 
 **Aegis is not deployed to mainnet yet.** It currently runs against a local `solana-test-validator` that **clones live mainnet state**, and the program is deployed to that local validator at `C67pkvsssWAB8j6vPmAfb2WB8uWWiPmkYfqEjK8HaG6L`.
