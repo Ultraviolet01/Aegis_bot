@@ -1,174 +1,166 @@
-# Aegis — Solana Rebuild (Stocklana Hackathon)
+# Aegis
 
-**Non-custodial AI risk guardian for tokenized stocks on Solana.**
-
-> _Write your risk limit in plain English. Aegis turns it into on-chain policy and guards your xStock position — non-custodially, 24/7._
+**Non-custodial risk guardian for tokenized stocks on Solana.**
+Write your risk limit in plain English. Aegis converts it into an on-chain policy and enforces it on your position — around the clock, without taking custody of your tokens.
 
 ---
 
-## What this is
+## What Aegis is
 
-This is a **from-scratch Solana rebuild** of Aegis for the [Stocklana hackathon](https://stocklana.xyz). It is a new, separate submission on a different chain from the original X Layer project. Nothing in this repo is EVM code.
+Aegis is a Solana program plus an off-chain guardian agent that lets the owner of a tokenized stock (an xStock — SPYX, QQQx, GLDx, …) set a downside rule and have that rule executed automatically.
+
+You describe the rule in a sentence — _"If SPYX drops more than 8%, exit 75% to USDC with 0.3% max slippage"_ — Claude converts it into numeric policy parameters, and the owner signs that policy on-chain. From then on an autonomous agent watches the price. When the rule is breached, the agent calls the program, and the program swaps the specified fraction of the position into a stable asset (USDC, USDT or SOL) **directly into the owner's own token account**.
+
+The agent never takes custody. It can only trigger a swap that the on-chain policy already permits, and the owner can withdraw at any moment regardless of what the agent is doing.
+
+---
+
+## Tech stack
 
 | Layer | Technology |
-|-------|-----------|
-| Smart contract | Anchor / Rust |
-| Token standard | SPL Token / Token-2022 |
-| DEX execution | Jupiter (Metis on-chain routing) |
-| Token oracle | xStocks Oracles API (issuer-verified) |
-| AI policy parser | Claude claude-opus-4-5 |
-| Frontend | Next.js 15 + Solana wallet adapter |
-| Agent | TypeScript (Node.js) |
+|---|---|
+| Smart contract | Rust + Anchor 0.30.1 (`programs/aegis`) |
+| Chain | Solana (`solana-test-validator` 1.18.17 locally) |
+| Token standard | SPL Token + Token-2022 (xStock scaled-UI-amount multiplier extension) |
+| Swap execution | Jupiter v6 aggregator CPI (`JUP6Lkb…`), routed through Raydium CLMM |
+| Price source | Jupiter quotes across Orca Whirlpool **and** Raydium CLMM, with a divergence guard |
+| Corporate actions | xStocks multiplier read from the on-chain Token-2022 extension + xStocks API events |
+| Policy parsing (AI) | Anthropic Claude — `claude-haiku-4-5` (dashboard), `claude-opus-4-5` (agent package) |
+| Frontend | Next.js 15.5 (App Router), React 19, TypeScript 5.7, Solana wallet adapter (Phantom, Solflare), lightweight-charts |
+| Agent | Node.js + TypeScript (`ts-node`), 30s poll loop |
+| Tests | Anchor `ts-mocha` suite (`tests/aegis.ts`), Jest unit tests (`agent-solana/test`) |
 
 ---
 
-## Why Aegis vs. your brokerage
+## System architecture
 
-| Problem | Brokerage | Aegis |
-|---------|-----------|-------|
-| Market hours | Stop-losses only work Mon–Fri 9:30–4 | xStocks trade 24/7 — guardian never sleeps |
-| Custody risk | Your assets are the broker's liability | You hold your keys; agent can only swap to your own USDC, SOL, or USDT wallet |
-| Counterparty | Can freeze accounts, restrict trading | Smart contract is permissionless; only you can withdraw |
-| Transparency | Black-box risk management | Every parameter you set is on-chain, auditable |
-| Corporate actions | Manual adjustment required | Multiplier normalisation: splits are not crashes |
+```mermaid
+flowchart TD
+    Owner["Owner wallet"] -->|"deposit xStock"| Program["Aegis program on Solana"]
+    Owner -->|"set policy, signed by owner only"| Program
+    Owner -->|"withdraw, always allowed"| Program
 
----
+    UI["Next.js dashboard"] -->|"deposit / withdraw / positions"| Program
+    Claude["Claude policy parser"] -->|"plain English to bps parameters"| UI
 
-## Architecture
+    Program --> Vault["Non-custodial position vault"]
 
-```
-Owner (wallet)
-   │
-   │  set_policy(drawdown_bps, exit_bps, max_slippage_bps, target_mint)
-   │  open_position(xStock token)
-   │  withdraw() — ungated, always available
-   ▼
-Aegis Program (Anchor)
-   │
-   │  swap_and_deliver(exit_bps, quoted_out_min)  ← agent-only
-   │    ├─ Verifies: agent == config.authorized_agent
-   │    ├─ Verifies: policy is active
-   │    ├─ Verifies: target_mint == policy.target_mint (USDC, SOL/WSOL, USDT)
-   │    ├─ Derives destination = owner's ATA for target_mint (non-custodial guarantee)
-   │    └─ CPI → Jupiter Router (Metis on-chain routing)
-   ▼
-Owner's USDC / SOL / USDT wallet (always, never arbitrary recipient)
+    Agent["Guardian agent"] -->|"reads policy from chain"| Program
+    Agent -->|"price check every 30s"| Pools["Jupiter quotes: Orca + Raydium"]
+    Agent -->|"breach confirmed twice"| Program
 
-Agent (TypeScript, off-chain, non-signing except for swap_and_deliver)
-   ├─ Polls xStocks Oracles API every 30s (issuer-verified price)
-   ├─ Fetches corporate actions (split/dividend awareness)
-   ├─ normalizePrice(raw, multiplier) → drawdown calculation
-   ├─ isInCorporateActionWindow() → suspend triggers during splits
-   └─ On breach → swap_and_deliver (only if policy active, not paused)
+    Program -->|"CPI swap of the exit percentage"| Pools
+    Pools -->|"proceeds only to owner ATA"| Owner
 ```
 
 ---
 
-## Non-custodial Invariants
+## How Aegis works
 
-1. **Withdraw is always available** — `withdraw()` is owner-only and can never be blocked by the agent
-2. **Swap destination is derived on-chain** — `get_associated_token_address(owner)` in `swap_and_deliver`, never a parameter
-3. **Slippage is capped at policy creation** — `max_slippage_bps` set by owner; agent cannot exceed it
-4. **No arbitrary recipient** — the only account that ever receives swap output is the owner's own destination ATA (USDC, SOL, or USDT)
+**1. Policy creation (dashboard → Claude → chain)**
+The dashboard sends your sentence to `/api/parse-policy`, which calls Claude with a forced JSON tool schema and re-validates the result with Zod. Every basis-point field is clamped to a program-aligned envelope (1–10 000 bps; slippage 1–500 bps), and the response reports which values were read from your sentence versus filled from a documented default, so a default is never presented as your instruction. The owner then signs `set_policy` — the program rejects any call that is not owner-signed.
 
----
+**2. Custody (program)**
+`open_position` moves the tokens into a per-position vault owned by the program. `withdraw` is owner-only and cannot be blocked or delayed by the agent, and no instruction lets the agent choose a recipient.
 
-## Pool Verification (§7)
+**3. Monitoring (agent → Jupiter → risk engine)**
+Every 30 s (configurable) the agent reads open positions and their policies from chain, then quotes the position's asset-to-target pair **on two venues — Orca Whirlpool and Raydium CLMM**. If the two venues disagree by more than 150 bps the pass is abandoned (circuit breaker), and if either quote is unavailable the position is skipped entirely (fail-closed) rather than acted on.
 
-SPYX and several other xStock tickers were found to have wash-trading across DEX pools by [mkzung/solana-xstocks-wash-analysis](https://github.com/mkzung/solana-xstocks-wash-analysis).
+Prices are normalized by the xStock multiplier before any drawdown maths, so a corporate action that re-prices the token is not mistaken for a crash. Positions inside a corporate-action activation window are suspended proactively.
 
-**Our approach:** Use the **xStocks Oracles API** (issuer-verified, wash-trade-resistant) as the primary price source for all drawdown calculations. DEX pool prices are only used at swap execution time for slippage calculation.
+**4. Trigger (agent → program)**
+A breach must be observed on **two consecutive polls** before anything is submitted, which filters single-tick wicks. The agent then calls `swap_and_deliver`, and the program enforces, on-chain:
 
-See [`POOL_VERIFICATION.md`](./POOL_VERIFICATION.md) for the full analysis.
+- the caller is the configured `authorized_agent`;
+- the policy is active and the position is not paused;
+- `exit_bps ≤ policy.exit_percent_bps` (the agent cannot exit more than you allowed);
+- the transfer target must equal `policy.target_mint`;
+- minimum output is computed from `policy.max_slippage_bps` (the agent cannot accept more slippage than you set);
+- the destination is **derived on-chain** as the owner's associated token account for that mint — it is not a parameter, so there is no arbitrary-recipient path.
 
----
-
-## Multiplier Normalisation (§6)
-
-Without normalisation, a 4-for-1 stock split is mathematically indistinguishable from a 75% crash to a naive price-only agent. Aegis normalises all prices using the xStocks `multiplier` field before computing drawdown:
-
-```
-share_equivalent_price = raw_price_usd × multiplier
-drawdown = (entry_share_eq - current_share_eq) / entry_share_eq
-```
-
-Test coverage: `agent-solana/test/risk/engine.test.ts` → `INVARIANT: 4-for-1 split does NOT trigger a breach` — 20/20 tests passing.
+**5. Execution and delivery**
+The program CPIs into the Jupiter v6 aggregator with the route data supplied by the agent; the swap output lands directly in the owner's token account.
 
 ---
 
-## Project Structure
+## Current environment: cloned mainnet
 
-```
-Aegis/
-├── programs/aegis/src/    # Anchor/Rust smart contract
-│   ├── lib.rs             # Instructions: open_position, set_policy, swap_and_deliver, …
-│   ├── state.rs           # Account structs: AegisConfig, Position, Policy
-│   └── errors.rs          # Custom error codes
-├── tests/aegis.ts         # Anchor test suite (invariant tests)
-├── agent-solana/          # TypeScript monitoring agent
-│   ├── src/
-│   │   ├── config.ts      # Configuration (RPC URL, keypair, program ID)
-│   │   ├── monitor.ts     # Main monitoring loop
-│   │   ├── xstocks/       # xStocks API client + multiplier logic
-│   │   ├── risk/          # Risk assessment engine (stateless)
-│   │   └── policy/        # Claude NL policy parser
-│   └── test/              # Unit tests (20/20 passing)
-├── frontend/              # Next.js 15 frontend
-│   └── app/
-│       ├── page.tsx           # Marketing landing page
-│       ├── app/page.tsx       # Dashboard (wallet connect, positions, policies)
-│       ├── app/history/page.tsx  # Price chart, backtest, Q&A
-│       └── api/               # Server routes: parse-policy, qa, xstocks proxy
-├── scripts/
-│   └── verify-spyx-pool.mjs  # Pool health verification script
-└── POOL_VERIFICATION.md   # Wash-trading analysis and architecture decision
-```
+**Aegis is not deployed to mainnet yet.** It currently runs against a local `solana-test-validator` that **clones live mainnet state**, and the program is deployed to that local validator at `C67pkvsssWAB8j6vPmAfb2WB8uWWiPmkYfqEjK8HaG6L`.
+
+Cloned from mainnet: the Jupiter v6 program and its ProgramData, the Raydium CLMM program and its ProgramData, the SPYX / QQQx / GLDx Token-2022 mints, USDC / USDT / SOL, and the pool and vault accounts the routes touch. The agent still fetches **live** Jupiter quotes over HTTPS.
+
+Practical consequences:
+
+- Nothing here risks real funds, and no swap can reach a real market.
+- The ledger is deleted and recreated every time the validator starts (`--reset`), so positions and policies do **not** survive a restart — re-seed and re-create them.
+- The clone list is a fixed snapshot. Because live routes reference pool PDAs that move over time, a swap can fail when the current route needs an account that was not cloned. Detection and dispatch still work; the CPI is what fails.
+- The test suite (`tests/aegis.ts`) is bound to `http://127.0.0.1:8899` and creates positions, executes swaps and fuzzes invariants. **Run it only against localnet.**
 
 ---
 
-## Quick Start
+## Why this matters for tokenized stocks on Solana
 
-### Prerequisites
+- Tokenized equities trade 24/7 on-chain, while brokerage stop orders only work during market hours — there is no broker-side mechanism watching an xStock position overnight or on a weekend.
+- xStocks are Token-2022 tokens whose `scaledUiAmount` multiplier changes on splits and dividends. Because that multiplier re-prices every holder, a 4-for-1 split is arithmetically identical to a 75% crash to any monitor that ignores it. Aegis normalizes by the multiplier before comparing prices.
+- Liquidity is concentrated in a small number of CLMM pools, so a single pool can print a distorted price. Cross-checking two venues and refusing to act when they diverge removes the single-bad-quote failure mode.
+- A rule that is enforced on-chain cannot be widened by the agent: exit size, slippage ceiling and destination are fixed by the owner and checked by the program at execution time.
+- The position stays in a program-owned vault that the owner can withdraw from at any time, so automation does not require handing over custody.
 
-- Rust (rustup) — installed ✅ (1.98.1)
-- Solana CLI — installed ✅ (2.1.0)
-- Anchor CLI — install via: `avm install latest && avm use latest`
-- Node.js 20+
+---
 
-### Agent
+## Setup
+
+**Prerequisites:** Rust, Solana CLI, Anchor CLI 0.30.1 (`avm install 0.30.1 && avm use 0.30.1`), Node.js 20+. On Windows, run the validator and its scripts from WSL.
+
+**1. Start the cloned-mainnet validator**
 
 ```bash
-cd agent-solana
-npm install
-cp .env.example .env     # fill in AGENT_KEYPAIR, AEGIS_PROGRAM_ID, ANTHROPIC_API_KEY
-npm test                 # 20/20 tests should pass
-npm run dev              # start monitoring (DRY_RUN=true by default)
+bash scripts/start_persistent_validator.sh
 ```
 
-### Frontend
+**2. Seed on-chain state** (config PDA, agent/authority, owner token accounts and balances)
+
+```bash
+node scripts/init_persistent_validator.cjs
+```
+
+**3. Frontend**
 
 ```bash
 cd frontend
 npm install --legacy-peer-deps
-npm run dev              # http://localhost:3000
+npm run dev                 # http://localhost:3000
+npm run typecheck           # tsc --noEmit
 ```
 
-### Smart Contract
+Environment lives in `frontend/.env.local`: `SOLANA_RPC_URL`, `NEXT_PUBLIC_RPC_URL`, `NEXT_PUBLIC_SOLANA_RPC_URL` (all `http://localhost:8899`), the program ID, and `ANTHROPIC_API_KEY`.
+
+**4. Agent**
 
 ```bash
-# After avm install:
-avm install latest && avm use latest
-anchor build
-anchor test              # runs against local validator
-anchor deploy --provider.cluster devnet
+cd agent-solana
+npm install
+npm test                    # Jest unit tests (localnet/RPC-free invariants)
+npm run dev                 # start the 30s monitoring loop
 ```
 
----
+Environment lives in `agent-solana/.env`. Supported variables: `SOLANA_RPC_URL`, `AEGIS_PROGRAM_ID`, `USDC_MINT`, `AGENT_KEYPAIR`, `ANTHROPIC_API_KEY`, `XSTOCKS_API_BASE`, `POLL_INTERVAL_MS`, `DRY_RUN`. Note that when the agent is constructed without an explicit `dryRun` option the compiled default is active dispatch, so run in dry mode explicitly while testing.
 
-## Submission Notes
+**5. Program**
 
-- **Chain:** Solana Devnet (devnet deploy pending `anchor build`)
-- **xStocks API:** API endpoint verification pending launch access (`api.xstocks.fi/api/v2`)
-- **Agent tests:** 20/20 passing — all critical invariants covered including split-vs-crash disambiguation
-- **Jupiter integration:** Metis on-chain routing wired in `swap_and_deliver` (CPI stub, full wiring post-IDL generation)
+```bash
+anchor build
+anchor test                 # localnet only — never point this at mainnet
+anchor deploy
+```
 
+**6. Trigger the guardian on demand (demo)**
+
+Against real market data a breach cannot be produced on command, so `demo-trigger.ts` drives the same monitor loop and substitutes only the price feed for a scripted drawdown. The position, the on-chain policy, the agent signature and the swap are real.
+
+```bash
+cd agent-solana
+npm run demo:trigger -- --drop 12 --pause 3000
+```
+
+Flags: `--drop <pct>`, `--asset <mint>`, `--entry <usd>`, `--pause <ms>`, `--dry-run`. The script refuses to run against a non-local RPC and prints on every pass that the price feed is scripted.
