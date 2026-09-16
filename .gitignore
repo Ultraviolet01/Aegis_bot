@@ -65,3 +65,5 @@ desktop.ini
 
 # Local demo captures
 .demo-shots/
+.vercel
+.env*
