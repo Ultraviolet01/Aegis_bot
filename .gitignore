@@ -48,20 +48,12 @@ architecture.md
 project-plan.md
 handoff.md
 prd.md
-scripts/
 build_wsl.sh
-
-# Test suites & fixtures
-tests/
-agent-solana/test/
-
-
 
 # OS junk
 .DS_Store
 Thumbs.db
 desktop.ini
-
 
 # Local demo captures
 .demo-shots/
