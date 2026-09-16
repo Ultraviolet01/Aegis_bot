@@ -80,14 +80,14 @@ The agent never takes custody. It can only trigger a swap that the on-chain poli
 ### 9. Client wallet integration & non-custodial signing (Solana Wallet Adapter)
 - **Technology**: `@solana/wallet-adapter-react`, `@solana/wallet-adapter-react-ui`, `@solana/web3.js`.
 - **Where it is used in code**:
-  - [`frontend/components/WalletProvider.tsx`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/components/WalletProvider.tsx): Wraps the application with Phantom, Solflare, and standard Solana wallet providers.
+  - [`frontend/lib/wallet-provider.tsx`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/lib/wallet-provider.tsx): Wraps the application with Phantom, Solflare, and standard Solana wallet providers.
   - [`frontend/app/api/deposit/route.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/api/deposit/route.ts): Builds unsigned `open_position` + `set_policy` transactions returned to the browser for user signing.
   - [`frontend/app/api/withdraw/route.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/api/withdraw/route.ts): Builds unsigned `withdraw` transactions ensuring only the owner can unlock vault funds.
 
 ### 10. Financial charting & series visualization (TradingView Lightweight Charts)
 - **Technology**: `lightweight-charts` (v4).
 - **Where it is used in code**:
-  - [`frontend/components/price-chart.tsx`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/components/price-chart.tsx): Interactive financial chart component rendering candlesticks, area series, and corporate action markers.
+  - [`frontend/app/components/CandlestickChart.tsx`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/components/CandlestickChart.tsx): Interactive financial chart component rendering candlesticks, area series, and corporate action markers.
   - [`frontend/app/app/history/page.tsx`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/app/history/page.tsx): Ingests time-series datasets into the chart and coordinates backtest visual overlays.
 
 ### 11. Autonomous 24/7 guardian service (Node.js, TypeScript & Railway)
@@ -297,7 +297,7 @@ Railway hosts the monitoring agent as a persistent background worker with automa
 2. **Configure Service Settings**:
    - **Root Directory**: Set to `/agent-solana`.
    - **Build Command**: `npm run build`
-   - **Start Command**: `npm start` (or auto-detected via [`agent-solana/Procfile`](file:///agent-solana/Procfile): `worker: npm start`).
+   - **Start Command**: `npm start` (or auto-detected via [`agent-solana/Procfile`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/Procfile): `worker: npm start`).
    - **Service Type**: Worker service (no public HTTP port required; the agent runs an outbound polling daemon).
 
 3. **Set Environment Variables in Railway**:
