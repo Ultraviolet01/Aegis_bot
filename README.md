@@ -243,6 +243,26 @@ Practical consequences:
 - The clone list is a fixed snapshot. Because live routes reference pool PDAs that move over time, a swap can fail when the current route needs an account that was not cloned. Detection and dispatch still work; the CPI is what fails.
 - The test suite (`tests/aegis.ts`) is bound to `http://127.0.0.1:8899` and creates positions, executes swaps and fuzzes invariants. **Run it only against localnet.**
 
+### Contracts for mainnet deployment and their use cases
+
+When transitioning from cloned localnet to Solana mainnet, the custom program to deploy alongside its integrated on-chain protocols are:
+
+* **Aegis Core Program (`aegis.so` / Program ID: `C67pkvsssWAB8j6vPmAfb2WB8uWWiPmkYfqEjK8HaG6L`)**
+  * **Deployment**: The primary contract to deploy to mainnet, compiled from [`programs/aegis`](file:///c:/Users/USER/Downloads/Aegis/programs/aegis).
+  * **Use cases**:
+    * **Non-custodial vault management**: Derives program-owned, isolated per-user vaults (`Position` PDA) for tokenized stocks.
+    * **Policy enforcement**: Stores user-signed risk rules (`Policy` PDA) defining exact drawdown triggers, oracle jump limits, exit fractions, and slippage bounds.
+    * **Guaranteed user withdrawal**: Exposes unconditional owner-only withdraw instructions ensuring users can unlock and retrieve vault tokens at any second without agent authorization.
+    * **Autonomous exit execution (`swap_and_deliver`)**: Authenticates the guardian agent, validates that market conditions strictly meet on-chain policy criteria, executes CPI swaps, and forces proceeds directly into the user's personal associated token account.
+
+* **Jupiter v6 Swap Aggregator (`JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4`)**
+  * **Deployment**: Pre-existing canonical Solana mainnet program.
+  * **Use cases**: Target of Aegis's on-chain CPI (`programs/aegis/src/jupiter_cpi.rs`); routes emergency swaps across Raydium CLMM, Orca Whirlpools, and Meteora pools with optimal price execution and minimal market impact.
+
+* **SPL Token & Token-2022 Programs (`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` & `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`)**
+  * **Deployment**: Pre-existing Solana native core programs.
+  * **Use cases**: Powers custody-free vault transfers, and enables on-chain inspection of Token-2022 Extension 25 (`ScaledUiAmountConfig`) for stock split and dividend multiplier adjustments.
+
 ---
 
 ## Why this matters for tokenized stocks on Solana
