@@ -20,8 +20,8 @@ The agent never takes custody. It can only trigger a swap that the on-chain poli
 ### 1. Smart contract & on-chain state machine (Rust + Anchor 0.30.1)
 - **Technology**: Rust, Anchor Framework 0.30.1, Solana Program SDK.
 - **Where it is used in code**:
-  - [`programs/aegis/src/lib.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/lib.rs): Program entrypoint, instruction dispatching, and security constraints (`initialize`, `open_position`, `set_policy`, `withdraw`, `swap_and_deliver`).
-  - [`programs/aegis/src/state.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/state.rs): On-chain PDA account schemas (`AegisConfig`, `Position`, `Policy`, `OracleConfig`).
+  - [`programs/aegis/src/lib.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/lib.rs): Program entrypoint, instruction dispatching, and security constraints (`initialize`, `open_position`, `set_policy`, `deactivate_policy`, `pause_position`, `unpause_position`, `withdraw`, `get_mint_multiplier`, `swap_and_deliver`).
+  - [`programs/aegis/src/state.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/state.rs): On-chain PDA account schemas (`AegisConfig`, `Position`, `Policy`, and `PolicyMode` enum).
   - [`programs/aegis/src/errors.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/errors.rs): Custom error codes enforcing ownership, breach validity, and slippage protections.
   - [`programs/aegis/Cargo.toml`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/Cargo.toml) and [`Anchor.toml`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/Anchor.toml): Package configuration, dependency declarations, and Anchor workspace wiring.
 
@@ -32,10 +32,10 @@ The agent never takes custody. It can only trigger a swap that the on-chain poli
   - [`scripts/init_persistent_validator.cjs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/scripts/init_persistent_validator.cjs): Seeds the local blockchain state, initializes the `AegisConfig` PDA, configures agent authorization, and funds demo wallets.
 
 ### 3. Token standards & corporate action normalization (SPL Token & Token-2022)
-- **Technology**: Solana Token Program, Token-2022 (`spl-token-2022`), `scaledUiAmount` / `InterestBearing` extensions.
+- **Technology**: Solana Token Program, Token-2022 (`spl-token-2022`), `ScaledUiAmountConfig` (Extension 25).
 - **Where it is used in code**:
-  - [`programs/aegis/src/token2022.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/token2022.rs): On-chain CPI helpers for Token-2022 vault transfers and multiplier inspection.
-  - [`agent-solana/src/xstocks/onchain.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/xstocks/onchain.ts): Parses Token-2022 mint accounts directly from chain to extract split multipliers.
+  - [`programs/aegis/src/token2022.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/token2022.rs): On-chain TLV extension parser (`read_mint_multiplier`) reading `ScaledUiAmountConfig` multipliers directly from mint account data.
+  - [`agent-solana/src/xstocks/onchain.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/xstocks/onchain.ts): Parses Token-2022 mint accounts directly from Solana RPC using `getScaledUiAmountConfig` to extract split/dividend multipliers without external API reliance.
   - [`agent-solana/src/xstocks/multiplier.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/xstocks/multiplier.ts): Normalizes stock prices against corporate action multipliers before drawdown calculations.
   - [`frontend/app/api/token-info/route.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/api/token-info/route.ts): Inspects arbitrary on-chain mints to determine standard (SPL vs Token-2022) and corporate action metadata.
 
@@ -44,7 +44,7 @@ The agent never takes custody. It can only trigger a swap that the on-chain poli
 - **Where it is used in code**:
   - [`programs/aegis/src/jupiter_cpi.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/jupiter_cpi.rs): Encapsulates low-level `invoke_signed` CPI into Jupiter v6 (`JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4`).
   - [`programs/aegis/src/lib.rs`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/programs/aegis/src/lib.rs): Validates execution invariants in `swap_and_deliver` and delivers swapped funds directly to the user's Associated Token Account (ATA).
-  - [`agent-solana/src/dispatcher/executor.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/dispatcher/executor.ts): Fetches executable route transactions from Jupiter API and dispatches them signed by the authorized agent keypair.
+  - [`agent-solana/src/dispatcher/executor.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/dispatcher/executor.ts): Fetches executable route instructions from Jupiter API and dispatches them signed by the authorized agent keypair.
 
 ### 5. Multi-venue pricing & circuit breaker (Orca Whirlpools & Raydium CLMM)
 - **Technology**: Jupiter Quote API, Orca Whirlpool AMM, Raydium CLMM.
@@ -85,21 +85,22 @@ The agent never takes custody. It can only trigger a swap that the on-chain poli
   - [`frontend/app/api/withdraw/route.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/api/withdraw/route.ts): Builds unsigned `withdraw` transactions ensuring only the owner can unlock vault funds.
 
 ### 10. Financial charting & series visualization (TradingView Lightweight Charts)
-- **Technology**: `lightweight-charts` (v4).
+- **Technology**: `lightweight-charts` (v5.2).
 - **Where it is used in code**:
-  - [`frontend/app/components/CandlestickChart.tsx`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/components/CandlestickChart.tsx): Interactive financial chart component rendering candlesticks, area series, and corporate action markers.
+  - [`frontend/app/components/CandlestickChart.tsx`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/components/CandlestickChart.tsx): Interactive financial chart component rendering candlesticks, area series, and corporate action markers using the v5 series factory.
   - [`frontend/app/app/history/page.tsx`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/frontend/app/app/history/page.tsx): Ingests time-series datasets into the chart and coordinates backtest visual overlays.
 
 ### 11. Autonomous 24/7 guardian service (Node.js, TypeScript & Railway)
 - **Technology**: Node.js 20+, TypeScript, Railway PaaS background worker.
 - **Where it is used in code**:
-  - [`agent-solana/src/index.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/index.ts): Main daemon loop and signal handling (`SIGINT`, `SIGTERM`).
+  - [`agent-solana/src/index.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/index.ts): Main daemon loop, signal handling (`SIGINT`, `SIGTERM`), and standalone/cloud monitoring mode evaluating live SPYX Token-2022 quotes.
   - [`agent-solana/src/monitor.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/monitor.ts): 30-second polling orchestrator reading on-chain accounts and coordinating price checks.
   - [`agent-solana/src/demo-trigger.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/src/demo-trigger.ts): CLI test runner for injecting simulated drawdowns against real on-chain positions.
-  - [`agent-solana/Procfile`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/Procfile) & [`agent-solana/package.json`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/package.json): Railway worker deployment configuration (`worker: npm start`).
+  - [`agent-solana/railway.json`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/railway.json) & [`agent-solana/Procfile`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/Procfile): Railway deployment manifest (`nixpacks`) and process worker configuration (`worker: npm start`).
+  - [`agent-solana/package.json`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/package.json): Guardian worker dependencies and build scripts.
 
 ### 12. Automated testing & quality assurance (Anchor ts-mocha & Jest)
-- **Technology**: Anchor Test Harness, Mocha, Chai, Jest.
+- **Technology**: Anchor Test Harness, Mocha, Chai, Jest 29 (`ts-jest`).
 - **Where it is used in code**:
   - [`tests/aegis.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/tests/aegis.ts): End-to-end integration tests verifying vault creation, policy limits, unauthorized caller rejection, and Jupiter swaps.
   - [`agent-solana/test/policy/parser.test.ts`](https://github.com/Ultraviolet01/Aegis_bot/blob/main/agent-solana/test/policy/parser.test.ts): Unit tests verifying policy extraction and parameter bounds.
